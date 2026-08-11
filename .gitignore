@@ -1,0 +1,5 @@
+db/*.sqlite
+static/audio/
+__pycache__/
+*.pyc
+.venv/
