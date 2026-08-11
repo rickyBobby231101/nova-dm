@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nova-dm</title>
+<style>
+  body { font-family: system-ui, sans-serif; background:#12141a; color:#e8e8ec;
+         display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+  .card { background:#1b1e27; border:1px solid #2a2e3a; border-radius:12px; padding:32px;
+          width:90%; max-width:360px; text-align:center; }
+  h1 { font-size:20px; margin:0 0 6px; }
+  p { color:#9098ac; font-size:13px; margin:0 0 20px; }
+  input { width:100%; box-sizing:border-box; padding:12px; border-radius:8px; border:1px solid #333848;
+          background:#12141a; color:#e8e8ec; font-size:16px; margin-bottom:14px; }
+  button { width:100%; padding:12px; border-radius:8px; border:none; background:#6a5cff;
+           color:white; font-size:15px; font-weight:600; cursor:pointer; }
+  button:active { background:#5847e0; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Enter the Campaign</h1>
+    <p>What should we call you?</p>
+    <form method="post" action="/join">
+      <input type="text" name="name" placeholder="Your name" autofocus required maxlength="40">
+      <button type="submit">JOIN</button>
+    </form>
+  </div>
+</body>
+</html>

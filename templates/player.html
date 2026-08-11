@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ character.name }} — nova-dm</title>
+<style>
+  body { font-family: system-ui, sans-serif; background:#12141a; color:#e8e8ec; margin:0; padding:16px;
+         max-width:520px; margin-left:auto; margin-right:auto; }
+  .sheet { background:#1b1e27; border:1px solid #2a2e3a; border-radius:12px; padding:16px; margin-bottom:14px; }
+  .name-row { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; }
+  .name-row h1 { font-size:18px; margin:0; }
+  .meta { color:#9098ac; font-size:12px; }
+  .hp-bar-bg { background:#12141a; border-radius:6px; height:14px; overflow:hidden; margin:8px 0; }
+  .hp-bar-fg { background:#4caf7d; height:100%; transition:width .3s; }
+  .hp-text { font-size:12px; color:#c8ccdc; text-align:right; }
+  .stat-row { display:flex; gap:16px; font-size:12px; color:#9098ac; margin-top:6px; }
+  .abilities { display:grid; grid-template-columns:repeat(6, 1fr); gap:6px; margin-top:12px; }
+  .ability { background:#12141a; border-radius:6px; padding:6px 2px; text-align:center; }
+  .ability .label { font-size:10px; color:#9098ac; }
+  .ability .score { font-size:14px; font-weight:600; }
+  .ability .mod { font-size:11px; color:#6a5cff; }
+  .card { background:#1b1e27; border:1px solid #2a2e3a; border-radius:12px; padding:14px 16px; margin-bottom:14px; }
+  .card h2 { font-size:12px; letter-spacing:.05em; color:#9098ac; margin:0 0 10px; text-transform:uppercase; }
+  select, textarea { width:100%; box-sizing:border-box; padding:9px; border-radius:6px; border:1px solid #333848;
+                     background:#12141a; color:#e8e8ec; font-size:14px; margin-bottom:8px; }
+  textarea { resize:vertical; min-height:60px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  label.chk { font-size:12px; color:#9098ac; display:flex; align-items:center; gap:4px; white-space:nowrap; }
+  button { padding:10px 16px; border-radius:8px; border:none; background:#6a5cff;
+           color:white; font-size:14px; font-weight:600; cursor:pointer; }
+  button:disabled { background:#333848; color:#666; cursor:not-allowed; }
+  #feed { max-height:220px; overflow-y:auto; font-size:13px; }
+  #feed .entry { padding:6px 0; border-bottom:1px solid #2a2e3a; }
+  #feed .entry:last-child { border-bottom:none; }
+  .empty { color:#666; font-size:12px; }
+</style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="name-row">
+      <h1>{{ character.name }}</h1>
+      <span class="meta">{{ character.race|capitalize }} {{ character.class|capitalize }}</span>
+    </div>
+    <div class="meta">Level {{ character.level }} · XP {{ character.xp }} · AC {{ character.ac }} · Speed {{ character.speed }}ft</div>
+    <div class="hp-bar-bg"><div class="hp-bar-fg" id="hp-bar" style="width:{{ (character.current_hp / character.max_hp * 100)|round|int }}%"></div></div>
+    <div class="hp-text" id="hp-text">{{ character.current_hp }} / {{ character.max_hp }} HP{% if character.temp_hp %} (+{{ character.temp_hp }} temp){% endif %}</div>
+    <div class="abilities">
+      {% for key, label in [('str','STR'),('dex','DEX'),('con','CON'),('int_','INT'),('wis','WIS'),('cha','CHA')] %}
+      <div class="ability">
+        <div class="label">{{ label }}</div>
+        <div class="score">{{ character[key] }}</div>
+        <div class="mod">{{ '%+d'|format((character[key] - 10) // 2) }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Roll a Check</h2>
+    <div class="row">
+      <select id="roll-ability">
+        <option value="str">STR</option><option value="dex">DEX</option><option value="con">CON</option>
+        <option value="int_">INT</option><option value="wis">WIS</option><option value="cha">CHA</option>
+      </select>
+      <label class="chk"><input type="checkbox" id="roll-prof"> Proficient</label>
+      <button onclick="rollCheck()">ROLL</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Campaign Feed</h2>
+    <div id="feed"><div class="empty">Rolls from everyone at the table will appear here live.</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Your Action</h2>
+    <textarea id="action-text" placeholder="Describe what you do... (not wired up yet)"></textarea>
+    <button disabled>SUBMIT ACTION (coming soon)</button>
+  </div>
+
+<script src="/static/vendor/socket.io.min.js"></script>
+<script>
+  const CHARACTER_ID = {{ character.id }};
+  const socket = io();
+  const feed = document.getElementById('feed');
+
+  function addFeedEntry(text) {
+    if (feed.querySelector('.empty')) feed.innerHTML = '';
+    const el = document.createElement('div');
+    el.className = 'entry';
+    el.textContent = text;
+    feed.prepend(el);
+  }
+
+  function rollCheck() {
+    const ability = document.getElementById('roll-ability').value;
+    const proficient = document.getElementById('roll-prof').checked;
+    socket.emit('roll_request', {character_id: CHARACTER_ID, ability, proficient});
+  }
+
+  socket.on('roll_result', (data) => {
+    if (data.error) { addFeedEntry('Error: ' + data.error); return; }
+    const advTag = data.adv ? ` (${data.adv})` : '';
+    addFeedEntry(`${data.character} rolls ${data.ability.toUpperCase()}${advTag}: ${data.d20}+${data.modifier}=${data.total}`);
+  });
+</script>
+</body>
+</html>

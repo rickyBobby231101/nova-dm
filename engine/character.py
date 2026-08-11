@@ -3,7 +3,9 @@ writes live state to db/campaign.sqlite. All derived stats (HP, proficiency,
 level) are computed via engine.rules, never hand-entered."""
 import json
 import os
+import secrets
 import sqlite3
+from datetime import datetime
 
 from . import rules
 
@@ -58,6 +60,13 @@ CREATE TABLE IF NOT EXISTS character_features (
     character_id INTEGER NOT NULL,
     feature_slug TEXT NOT NULL,
     source_level INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS campaign_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    actor TEXT,
+    content TEXT NOT NULL
 );
 """
 
@@ -210,3 +219,52 @@ def apply_heal(character_id: int, amount: int) -> dict:
     with _campaign_con() as con:
         con.execute("UPDATE characters SET current_hp=? WHERE id=?", (current_hp, character_id))
     return {"character_id": character_id, "current_hp": current_hp, "max_hp": char["max_hp"]}
+
+
+# ── players / sessions ───────────────────────────────────────────────────────
+
+def create_player(name: str) -> dict:
+    token = secrets.token_hex(16)
+    with _campaign_con() as con:
+        cur = con.execute(
+            "INSERT INTO players (name, session_token, created_at) VALUES (?,?,?)",
+            (name.strip(), token, datetime.now().isoformat())
+        )
+        player_id = cur.lastrowid
+    return {"id": player_id, "name": name.strip(), "session_token": token}
+
+
+def get_player_by_token(token: str) -> dict:
+    with _campaign_con() as con:
+        row = con.execute("SELECT * FROM players WHERE session_token=?", (token,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_characters_for_player(player_id: int) -> list:
+    with _campaign_con() as con:
+        rows = con.execute("SELECT * FROM characters WHERE player_id=?", (player_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── SRD lookups for character creation ───────────────────────────────────────
+
+def list_srd_classes() -> list:
+    with _srd_con() as srd:
+        rows = srd.execute('SELECT "index", name FROM classes ORDER BY name').fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_srd_races() -> list:
+    with _srd_con() as srd:
+        rows = srd.execute('SELECT "index", name FROM races ORDER BY name').fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── campaign log — the permanent tape ────────────────────────────────────────
+
+def log_campaign_event(kind: str, actor: str, content: str):
+    with _campaign_con() as con:
+        con.execute(
+            "INSERT INTO campaign_log (ts, kind, actor, content) VALUES (?,?,?,?)",
+            (datetime.now().isoformat(), kind, actor, content)
+        )

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nova-dm — Characters</title>
+<style>
+  body { font-family: system-ui, sans-serif; background:#12141a; color:#e8e8ec; margin:0; padding:20px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:#9098ac; font-size:13px; margin-bottom:20px; }
+  .char-card { background:#1b1e27; border:1px solid #2a2e3a; border-radius:10px; padding:14px 16px;
+               margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; }
+  .char-card a { color:#e8e8ec; text-decoration:none; flex:1; }
+  .char-name { font-weight:600; }
+  .char-meta { color:#9098ac; font-size:12px; margin-top:2px; }
+  .card { background:#1b1e27; border:1px solid #2a2e3a; border-radius:10px; padding:18px; margin-top:20px; }
+  .card h2 { font-size:14px; margin:0 0 14px; color:#c8ccdc; }
+  label { font-size:12px; color:#9098ac; display:block; margin-bottom:4px; }
+  input, select { width:100%; box-sizing:border-box; padding:9px; border-radius:6px; border:1px solid #333848;
+                  background:#12141a; color:#e8e8ec; font-size:14px; margin-bottom:12px; }
+  .abilities { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px 12px; }
+  button { width:100%; padding:12px; border-radius:8px; border:none; background:#6a5cff;
+           color:white; font-size:15px; font-weight:600; cursor:pointer; margin-top:6px; }
+</style>
+</head>
+<body>
+  <h1>Welcome, {{ player.name }}</h1>
+  <div class="sub">Pick a character to play, or create a new one.</div>
+
+  {% for c in characters %}
+  <div class="char-card">
+    <a href="/play?character_id={{ c.id }}">
+      <div class="char-name">{{ c.name }}</div>
+      <div class="char-meta">{{ c.race|capitalize }} {{ c.class|capitalize }} · Level {{ c.level }} · {{ c.current_hp }}/{{ c.max_hp }} HP</div>
+    </a>
+  </div>
+  {% else %}
+  <div class="sub">No characters yet.</div>
+  {% endfor %}
+
+  <div class="card">
+    <h2>CREATE CHARACTER</h2>
+    <form method="post" action="/characters">
+      <label>Name</label>
+      <input type="text" name="name" required maxlength="40">
+
+      <label>Race</label>
+      <select name="race" required>
+        {% for r in races %}<option value="{{ r.index }}">{{ r.name }}</option>{% endfor %}
+      </select>
+
+      <label>Class</label>
+      <select name="class" required>
+        {% for c in classes %}<option value="{{ c.index }}">{{ c.name }}</option>{% endfor %}
+      </select>
+
+      <label>Ability Scores</label>
+      <div class="abilities">
+        <div><label>STR</label><input type="number" name="str" value="10" min="1" max="20"></div>
+        <div><label>DEX</label><input type="number" name="dex" value="10" min="1" max="20"></div>
+        <div><label>CON</label><input type="number" name="con" value="10" min="1" max="20"></div>
+        <div><label>INT</label><input type="number" name="int" value="10" min="1" max="20"></div>
+        <div><label>WIS</label><input type="number" name="wis" value="10" min="1" max="20"></div>
+        <div><label>CHA</label><input type="number" name="cha" value="10" min="1" max="20"></div>
+      </div>
+
+      <button type="submit">CREATE</button>
+    </form>
+  </div>
+</body>
+</html>
