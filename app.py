@@ -7,7 +7,7 @@ import socket as _socket
 from flask import Flask, jsonify, make_response, redirect, render_template, request, url_for
 from flask_socketio import SocketIO, emit, join_room
 
-from engine import character, dice
+from engine import character, dice, dm
 
 app = Flask(__name__)
 app.secret_key = "nova-dm-lan-only"  # LAN-only, no real auth in scope -- see plan
@@ -104,6 +104,15 @@ def on_roll_request(data):
         f"{char['name']} rolls {ability}: {result['d20']}+{result['modifier']}={result['total']}"
     )
     socketio.emit("roll_result", {"character": char["name"], **result}, room=CAMPAIGN_ROOM)
+
+
+@socketio.on("submit_action")
+def on_submit_action(data):
+    character_id = data.get("character_id")
+    action_text = (data.get("action_text") or "").strip()
+    if not action_text:
+        return
+    dm.handle_player_action(character_id, action_text, socketio)
 
 
 def _lan_ip():

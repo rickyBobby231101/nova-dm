@@ -75,8 +75,8 @@
 
   <div class="card">
     <h2>Your Action</h2>
-    <textarea id="action-text" placeholder="Describe what you do... (not wired up yet)"></textarea>
-    <button disabled>SUBMIT ACTION (coming soon)</button>
+    <textarea id="action-text" placeholder="Describe what you do..."></textarea>
+    <button id="action-submit" onclick="submitAction()">SUBMIT ACTION</button>
   </div>
 
 <script src="/static/vendor/socket.io.min.js"></script>
@@ -103,6 +103,30 @@
     if (data.error) { addFeedEntry('Error: ' + data.error); return; }
     const advTag = data.adv ? ` (${data.adv})` : '';
     addFeedEntry(`${data.character} rolls ${data.ability.toUpperCase()}${advTag}: ${data.d20}+${data.modifier}=${data.total}`);
+  });
+
+  function submitAction() {
+    const textEl = document.getElementById('action-text');
+    const text = textEl.value.trim();
+    if (!text) return;
+    const btn = document.getElementById('action-submit');
+    btn.disabled = true;
+    btn.textContent = 'THE DM IS THINKING...';
+    socket.emit('submit_action', {character_id: CHARACTER_ID, action_text: text});
+    textEl.value = '';
+  }
+
+  socket.on('campaign_event', (data) => {
+    addFeedEntry(data.text);
+  });
+
+  // Only re-enable for the player whose turn actually finished -- everyone in the
+  // room sees every turn_complete.
+  socket.on('turn_complete', (data) => {
+    if (data.character_id !== CHARACTER_ID) return;
+    const btn = document.getElementById('action-submit');
+    btn.disabled = false;
+    btn.textContent = 'SUBMIT ACTION';
   });
 </script>
 </body>

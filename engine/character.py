@@ -246,6 +246,13 @@ def list_characters_for_player(player_id: int) -> list:
     return [dict(r) for r in rows]
 
 
+def list_active_characters() -> list:
+    """All characters in the (single, shared) campaign -- used to give the DM table context."""
+    with _campaign_con() as con:
+        rows = con.execute("SELECT * FROM characters").fetchall()
+    return [dict(r) for r in rows]
+
+
 # ── SRD lookups for character creation ───────────────────────────────────────
 
 def list_srd_classes() -> list:
