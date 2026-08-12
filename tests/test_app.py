@@ -6,8 +6,8 @@ from flask_socketio import SocketIOTestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from engine import character
 import app as app_module
+from engine import character
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(character.SRD_DB_PATH),

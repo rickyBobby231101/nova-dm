@@ -2,6 +2,8 @@ import os
 import random
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from engine import dice
@@ -26,11 +28,8 @@ def test_roll_single_die_no_modifier():
 
 
 def test_roll_bad_expr():
-    try:
+    with pytest.raises(ValueError):
         dice.roll("not-a-dice-expr")
-        assert False, "should have raised"
-    except ValueError:
-        pass
 
 
 def test_roll_check_advantage_takes_higher():

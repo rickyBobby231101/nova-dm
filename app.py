@@ -128,6 +128,6 @@ def _lan_ip():
 
 if __name__ == "__main__":
     ip = _lan_ip()
-    print(f"nova-dm running: http://localhost:5050" +
+    print("nova-dm running: http://localhost:5050" +
           (f"  (LAN: http://{ip}:5050)" if ip else ""))
     socketio.run(app, host="0.0.0.0", port=5050, allow_unsafe_werkzeug=True)

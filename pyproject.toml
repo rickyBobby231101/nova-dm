@@ -1,0 +1,21 @@
+[tool.ruff]
+# Match the codebase as written rather than reformatting it -- the long lines
+# here are DM prompt text and SRD SQL, and wrapping those hurts readability.
+line-length = 120
+target-version = "py311"
+exclude = ["db", "static/vendor", ".venv"]
+
+[tool.ruff.lint]
+# Real-defect rules, not style policing: pyflakes (F), the pycodestyle errors
+# worth having (E4 imports, E7 statements, E9 syntax), import ordering (I),
+# bugbear's actual-bug subset (B), and pyupgrade (UP). E501 is deliberately
+# absent -- see the line-length note above.
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["engine"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests lean on pytest fixtures and asserts; unused-import noise there is
+# usually a fixture being registered, not a mistake.
+"tests/*" = ["F811"]

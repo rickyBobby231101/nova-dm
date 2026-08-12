@@ -3,3 +3,4 @@ flask-socketio
 requests
 pytest
 anthropic
+ruff
