@@ -15,29 +15,16 @@ from datetime import datetime
 
 from . import character, dice, rules
 
-
-# SRD damage entries come in three shapes, found by checking all 334 monsters:
-# a normal dice string ("1d6+2"), a flat number ("1" -- a badger's bite), and an
-# entry with no damage_dice at all, which is a "choose one" set of options. Those
-# are not decoration: a guard's spear encodes its ONLY damage that way (1d6+1 one
-# handed / 1d8+1 two handed), so dropping them leaves ten SRD monsters -- guard,
-# druid, merfolk, werewolf -- unable to attack. Take the first option, which is
-# both the one-handed damage for versatile weapons and the bonus damage rider on
-# a djinni's scimitar.
-def _damage_dice_of(entry: dict) -> str | None:
-    if entry.get("damage_dice"):
-        return entry["damage_dice"]
-    options = (entry.get("from") or {}).get("options") or []
-    for option in options:
-        if option.get("damage_dice"):
-            return option["damage_dice"]
-    return None
+# Open5e's title for the WotC SRD statblocks, as stored in monsters.source.
+CORE_SOURCE = "5e Core Rules"
 
 
-def _damage_amount(damage_dice) -> dict | None:
-    if not damage_dice:
+def _roll_expr(expr) -> dict | None:
+    """Roll a normalized expression. Some creatures deal fixed damage with no dice
+    ("Hit: 1 piercing damage"), which is a constant rather than a roll."""
+    if not expr:
         return None
-    expr = str(damage_dice).strip()
+    expr = str(expr).strip()
     if expr.isdigit():
         return {"expr": expr, "rolls": [], "modifier": int(expr), "total": int(expr)}
     try:
@@ -47,30 +34,21 @@ def _damage_amount(damage_dice) -> dict | None:
 
 
 def _monster_ac(data: dict) -> int:
-    ac = data.get("armor_class")
-    if isinstance(ac, list) and ac:
-        return int(ac[0].get("value", 10))
-    if isinstance(ac, int):
-        return ac
-    return 10
+    ac = data.get("ac", data.get("armor_class"))
+    return int(ac) if isinstance(ac, int) else 10
 
 
 def usable_actions(data: dict) -> list:
-    """Attack actions with both a to-hit bonus and real damage. Multiattack and
-    other narrative-only entries are excluded -- 5 SRD monsters have nothing left
-    after this, and that's a legitimate 'it has no attack' answer."""
-    out = []
-    for action in data.get("actions") or []:
-        if action.get("attack_bonus") is None:
-            continue
-        if not any(_damage_dice_of(d) for d in action.get("damage") or []):
-            continue
-        out.append(action)
-    return out
+    """Attacks the engine can actually roll. ingest_srd.normalize_attacks already
+    reduced every book's format to one shape, so nothing here has to know whether
+    a creature came from the SRD, Tome of Beasts or Black Flag. A creature with an
+    empty list genuinely has no rollable attack (77 of 3207) and says so rather
+    than having one invented for it."""
+    return list(data.get("attacks") or [])
 
 
 def list_srd_monsters(query: str = None, max_cr: float = None) -> list:
-    sql = 'SELECT "index" AS slug, name, cr, xp FROM monsters WHERE 1=1'
+    sql = 'SELECT "index" AS slug, name, cr, xp, source FROM monsters WHERE 1=1'
     params = []
     if query:
         sql += " AND name LIKE ?"
@@ -78,7 +56,10 @@ def list_srd_monsters(query: str = None, max_cr: float = None) -> list:
     if max_cr is not None:
         sql += " AND cr <= ?"
         params.append(max_cr)
-    sql += " ORDER BY cr, name"
+    # The core statblocks first: the same creature ships in up to four books, and
+    # a DM searching "badger" almost always wants the familiar one. Matched by
+    # exact title because "Black Flag SRD" also contains the word SRD.
+    sql += f" ORDER BY (source = '{CORE_SOURCE}') DESC, name, cr"
     with character._srd_con() as con:
         return [dict(r) for r in con.execute(sql, params).fetchall()]
 
@@ -117,10 +98,13 @@ def start_encounter(name: str, specs: list, character_ids: list = None) -> dict:
                 continue
             count = max(1, int(spec.get("count", 1)))
             for n in range(count):
-                # hit_points_roll carries the CON bonus (orc: 2d8+6); hit_dice does not.
-                hp_expr = data.get("hit_points_roll") or data.get("hit_dice")
-                rolled = _damage_amount(hp_expr)
-                hp = rolled["total"] if rolled else int(data.get("hit_points", 1))
+                # hp_expr is Open5e's hit_dice, which already carries the CON bonus
+                # ("10d12+50"). Black Flag creatures publish no dice at all, so they
+                # fall back to their flat printed hit points.
+                rolled = _roll_expr(data.get("hp_expr"))
+                hp = rolled["total"] if rolled else int(
+                    data.get("fallback_hp") or data.get("hit_points") or 1
+                )
                 hp = max(1, hp)
                 label = data["name"] if count == 1 else f"{data['name']} {n + 1}"
                 con.execute(
@@ -279,11 +263,8 @@ def monster_attack(combatant_id: int, action_name: str, target_id: int) -> dict:
         character.log_campaign_event("attack", attacker["name"], result["text"])
         return result
 
-    damage = 0
-    for entry in action.get("damage") or []:
-        rolled = _damage_amount(_damage_dice_of(entry))
-        if rolled:
-            damage += rolled["total"]
+    rolled = _roll_expr(action["damage_dice"])
+    damage = max(0, rolled["total"]) if rolled else 0
     result["damage"] = damage
     result["text"] = (f"{attacker['name']} hits {target['name']} with {action['name']}: "
                       f"{d20}+{action['attack_bonus']}={total} vs AC {target['ac']} for {damage}")

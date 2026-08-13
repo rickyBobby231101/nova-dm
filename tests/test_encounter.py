@@ -193,9 +193,9 @@ def test_monster_attack_rolls_against_real_ac_and_applies_damage():
         assert character.get_character(char["id"])["current_hp"] == char["max_hp"]
 
 
-def test_monster_attack_handles_flat_damage():
-    """A badger's bite is the literal string "1", not a dice expression -- parsing
-    it as dice would raise."""
+def test_monster_attack_handles_fixed_damage():
+    """A badger's bite is a flat 1 with no dice at all -- rolling it as a dice
+    expression would raise, and dropping it would leave the badger unarmed."""
     _make_character()
     state = encounter.start_encounter("critters", [{"slug": "badger", "count": 1}])
     badger, pc = _monsters(state)[0], _pcs(state)[0]
@@ -206,19 +206,52 @@ def test_monster_attack_handles_flat_damage():
     assert result["damage"] in (0, 1)
 
 
-def test_monster_attack_handles_versatile_choose_damage():
-    """A guard's spear encodes its only damage as a choose-one entry. Skipping
-    those would leave the guard unable to attack at all."""
+def test_attack_parsed_from_prose_is_usable():
+    """Whole Open5e sources (Tome of Beasts 3, Black Flag, menagerie) publish
+    attacks only as English prose. The ingest parses those into the same shape, so
+    the engine can't tell the difference."""
     _make_character()
-    state = encounter.start_encounter("watch", [{"slug": "guard", "count": 1}])
-    guard, pc = _monsters(state)[0], _pcs(state)[0]
+    state = encounter.start_encounter("tob", [{"slug": "aboleth_bf", "count": 1}])
+    beast, pc = _monsters(state)[0], _pcs(state)[0]
 
-    assert encounter.usable_actions(encounter.get_srd_monster("guard"))
-    result = encounter.monster_attack(guard["id"], "Spear", pc["id"])
+    actions = encounter.usable_actions(encounter.get_srd_monster("aboleth_bf"))
+    assert actions and actions[0]["attack_bonus"] > 0
 
+    result = encounter.monster_attack(beast["id"], actions[0]["name"], pc["id"])
     assert "error" not in result
-    if result["hit"]:
-        assert result["damage"] >= 2  # 1d6+1
+    assert 1 <= result["d20"] <= 20
+
+
+def test_creature_without_hit_dice_falls_back_to_printed_hp():
+    """Black Flag creatures publish no hit dice at all, only a flat hit point
+    total -- they must still come to the table with real HP."""
+    _make_character()
+    data = encounter.get_srd_monster("aboleth_bf")
+    assert data["hp_expr"] is None, "fixture assumes this creature has no hit dice"
+
+    state = encounter.start_encounter("bf", [{"slug": "aboleth_bf", "count": 1}])
+    beast = _monsters(state)[0]
+
+    assert beast["max_hp"] == data["fallback_hp"]
+
+
+def test_search_labels_the_source_and_puts_core_statblocks_first():
+    """The same creature ships in up to four books. Without the source the builder
+    shows identical-looking duplicates, and a DM searching 'badger' wants the
+    familiar one, not Black Flag's."""
+    results = encounter.list_srd_monsters(query="badger")
+    badgers = [m for m in results if m["name"] == "Badger"]
+
+    assert len(badgers) > 1, "fixture assumes this creature is published more than once"
+    assert all(m["source"] for m in badgers)
+    assert badgers[0]["source"] == encounter.CORE_SOURCE
+
+
+def test_catalog_covers_more_than_the_srd():
+    """The point of the Open5e move: the creature list is no longer 334 SRD
+    statblocks."""
+    all_monsters = encounter.list_srd_monsters()
+    assert len(all_monsters) > 3000
 
 
 def test_monster_with_no_attack_action_errors_rather_than_inventing_one():

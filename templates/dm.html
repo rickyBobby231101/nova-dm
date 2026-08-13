@@ -181,7 +181,10 @@
     d.monsters.forEach((m) => {
       const el = document.createElement('div');
       el.className = 'm';
-      el.innerHTML = `<span>${m.name} <span style="color:#9098ac">CR ${m.cr}</span></span>`;
+      // The source matters: the same creature ships in several books, so without
+      // it the list shows identical-looking duplicates.
+      el.innerHTML = `<span>${m.name} <span style="color:#9098ac">CR ${m.cr}</span>` +
+                     `<span style="color:#6a6f80; font-size:10px; display:block">${m.source || ''}</span></span>`;
       const btn = document.createElement('button');
       btn.className = 'mini';
       btn.textContent = 'ADD';
