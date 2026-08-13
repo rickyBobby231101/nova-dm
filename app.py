@@ -7,7 +7,7 @@ import socket as _socket
 from flask import Flask, jsonify, make_response, redirect, render_template, request, url_for
 from flask_socketio import SocketIO, emit, join_room
 
-from engine import character, dice, dm
+from engine import character, dice, dm, voice
 
 app = Flask(__name__)
 app.secret_key = "nova-dm-lan-only"  # LAN-only, no real auth in scope -- see plan
@@ -87,6 +87,8 @@ def api_character(character_id):
 @socketio.on("connect")
 def on_connect():
     join_room(CAMPAIGN_ROOM)
+    # A device joining mid-session needs the current state of the shared speaker.
+    emit("voice_state", {"enabled": voice.is_enabled(), "available": voice.available()})
 
 
 @socketio.on("roll_request")
@@ -113,6 +115,18 @@ def on_submit_action(data):
     if not action_text:
         return
     dm.handle_player_action(character_id, action_text, socketio)
+
+
+@socketio.on("set_voice")
+def on_set_voice(data):
+    # The speaker is the server box, not the phone in your hand -- so the mute is
+    # room-wide, and every device's toggle has to follow it.
+    voice.set_enabled(bool(data.get("enabled")))
+    socketio.emit(
+        "voice_state",
+        {"enabled": voice.is_enabled(), "available": voice.available()},
+        room=CAMPAIGN_ROOM,
+    )
 
 
 def _lan_ip():

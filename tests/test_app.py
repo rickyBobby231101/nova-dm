@@ -97,8 +97,11 @@ def test_roll_request_broadcasts_roll_result_and_logs_it():
     socket_client.emit("roll_request", {"character_id": char_id, "ability": "wis", "proficient": True})
     received = socket_client.get_received()
 
-    assert len(received) == 1
-    result = received[0]["args"][0]
+    # connect also delivers voice_state, so pick the event out by name rather than
+    # assuming a roll is the only thing a client ever hears
+    rolls = [r for r in received if r["name"] == "roll_result"]
+    assert len(rolls) == 1
+    result = rolls[0]["args"][0]
     assert result["character"] == "Mira"
     assert "d20" in result and 1 <= result["d20"] <= 20
     assert "total" in result
@@ -107,3 +110,22 @@ def test_roll_request_broadcasts_roll_result_and_logs_it():
         rows = con.execute("SELECT * FROM campaign_log WHERE kind='roll'").fetchall()
     assert len(rows) == 1
     assert "Mira" in rows[0]["content"]
+
+
+def test_set_voice_is_room_wide():
+    """The speaker is the server box, so muting from one phone has to mute the
+    room and update every other device's toggle."""
+    try:
+        one = SocketIOTestClient(app_module.app, app_module.socketio)
+        two = SocketIOTestClient(app_module.app, app_module.socketio)
+        one.get_received()
+        two.get_received()
+
+        one.emit("set_voice", {"enabled": False})
+
+        assert app_module.voice.is_enabled() is False
+        for client in (one, two):
+            states = [r for r in client.get_received() if r["name"] == "voice_state"]
+            assert states and states[-1]["args"][0]["enabled"] is False
+    finally:
+        app_module.voice.set_enabled(True)

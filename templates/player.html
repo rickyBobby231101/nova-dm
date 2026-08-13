@@ -22,6 +22,9 @@
   .ability .mod { font-size:11px; color:#6a5cff; }
   .card { background:#1b1e27; border:1px solid #2a2e3a; border-radius:12px; padding:14px 16px; margin-bottom:14px; }
   .card h2 { font-size:12px; letter-spacing:.05em; color:#9098ac; margin:0 0 10px; text-transform:uppercase; }
+  .card-head { display:flex; justify-content:space-between; align-items:center; }
+  button.mini { padding:4px 8px; font-size:10px; letter-spacing:.05em; background:#2a2e3a; color:#9098ac; }
+  button.mini.on { background:#6a5cff; color:white; }
   select, textarea { width:100%; box-sizing:border-box; padding:9px; border-radius:6px; border:1px solid #333848;
                      background:#12141a; color:#e8e8ec; font-size:14px; margin-bottom:8px; }
   textarea { resize:vertical; min-height:60px; }
@@ -69,7 +72,10 @@
   </div>
 
   <div class="card">
-    <h2>Campaign Feed</h2>
+    <h2 class="card-head">
+      Campaign Feed
+      <button id="voice-toggle" class="mini" onclick="toggleVoice()">DM VOICE: ON</button>
+    </h2>
     <div id="feed"><div class="empty">Rolls from everyone at the table will appear here live.</div></div>
   </div>
 
@@ -118,6 +124,26 @@
 
   socket.on('campaign_event', (data) => {
     addFeedEntry(data.text);
+  });
+
+  // The DM's voice comes out of the server box, not this device, so the toggle is
+  // room-wide -- the server owns the state and every client follows voice_state.
+  let voiceEnabled = true;
+
+  function toggleVoice() {
+    socket.emit('set_voice', {enabled: !voiceEnabled});
+  }
+
+  socket.on('voice_state', (data) => {
+    voiceEnabled = data.enabled;
+    const btn = document.getElementById('voice-toggle');
+    btn.classList.toggle('on', data.enabled);
+    if (!data.available) {
+      btn.textContent = 'DM VOICE: N/A';
+      btn.disabled = true;
+      return;
+    }
+    btn.textContent = data.enabled ? 'DM VOICE: ON' : 'DM VOICE: OFF';
   });
 
   // Only re-enable for the player whose turn actually finished -- everyone in the

@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from engine import character, dm
+from engine import character, dm, voice
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(character.SRD_DB_PATH),
@@ -121,6 +121,48 @@ def test_handle_player_action_runs_tool_loop_then_narrates():
     assert ("turn_complete", {"character_id": char["id"]}) == (
         socketio.emit.call_args_list[-1].args[0], socketio.emit.call_args_list[-1].args[1]
     )
+
+
+def test_handle_player_action_speaks_the_narration():
+    char = _make_character()
+    socketio = MagicMock()
+
+    response = _Response(
+        content=[_Block("text", text="The torchlight gutters as you step through.")],
+        stop_reason="end_turn",
+    )
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = response
+
+    spoken = []
+    with patch.object(dm, "_get_client", return_value=fake_client), \
+         patch.object(voice, "speak", side_effect=spoken.append):
+        dm.handle_player_action(char["id"], "I open the door", socketio)
+
+    assert spoken == ["The torchlight gutters as you step through."]
+
+
+def test_turn_survives_a_broken_speaker():
+    """A dead sound card must not cost the player their turn -- the text still
+    lands and the submit button is still released."""
+    char = _make_character()
+    socketio = MagicMock()
+
+    response = _Response(
+        content=[_Block("text", text="The torchlight gutters as you step through.")],
+        stop_reason="end_turn",
+    )
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = response
+
+    with patch.object(dm, "_get_client", return_value=fake_client), \
+         patch.object(voice, "speak", side_effect=RuntimeError("no audio device")):
+        dm.handle_player_action(char["id"], "I open the door", socketio)
+
+    emitted_texts = [call.args[1]["text"] for call in socketio.emit.call_args_list
+                     if call.args[0] == "campaign_event"]
+    assert any("torchlight" in t for t in emitted_texts)
+    assert socketio.emit.call_args_list[-1].args[0] == "turn_complete"
 
 
 def test_handle_player_action_gives_up_after_max_iterations():

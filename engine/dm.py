@@ -6,7 +6,7 @@ import json
 
 import anthropic
 
-from . import character, dice
+from . import character, dice, voice
 
 MODEL = "claude-opus-5"
 MAX_TOOL_ITERATIONS = 6
@@ -177,6 +177,12 @@ def handle_player_action(character_id: int, action_text: str, socketio):
             if narration:
                 character.log_campaign_event("dm", "DM", narration)
                 socketio.emit("campaign_event", {"text": narration, "kind": "dm"}, room="campaign")
+                # Queued and spoken on a worker thread -- synthesis takes seconds,
+                # and nothing about the turn should wait on the speaker.
+                try:
+                    voice.speak(narration)
+                except Exception:
+                    pass
 
             if response.stop_reason != "tool_use":
                 break
