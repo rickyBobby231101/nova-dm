@@ -37,6 +37,17 @@
   #feed .entry { padding:6px 0; border-bottom:1px solid #2a2e3a; }
   #feed .entry:last-child { border-bottom:none; }
   .empty { color:#666; font-size:12px; }
+  .combatant { display:flex; align-items:center; gap:8px; padding:6px 7px; border-radius:8px;
+               border:1px solid transparent; font-size:13px; }
+  .combatant.turn { border-color:#6a5cff; background:#12141a; }
+  .combatant.down { opacity:.45; }
+  .combatant .init { font-size:11px; color:#9098ac; width:24px; text-align:right; }
+  .combatant .nm { flex:1; }
+  .combatant .nm .tag { font-size:10px; color:#9098ac; margin-left:5px; }
+  .combatant .hp { font-size:12px; color:#c8ccdc; white-space:nowrap; }
+  .mini-bar-bg { background:#12141a; border-radius:4px; height:6px; width:56px; overflow:hidden; }
+  .mini-bar-fg { background:#4caf7d; height:100%; }
+  .mini-bar-fg.hurt { background:#c9a227; } .mini-bar-fg.bad { background:#a33; }
 </style>
 </head>
 <body>
@@ -71,6 +82,15 @@
     </div>
   </div>
 
+  <!-- only present while a fight is running -->
+  <div class="card" id="encounter-card" style="display:none">
+    <h2 class="card-head">
+      <span id="enc-name">Encounter</span>
+      <span class="meta" id="enc-round"></span>
+    </h2>
+    <div id="enc-order"></div>
+  </div>
+
   <div class="card">
     <h2 class="card-head">
       Campaign Feed
@@ -90,6 +110,12 @@
   const CHARACTER_ID = {{ character.id }};
   const socket = io();
   const feed = document.getElementById('feed');
+
+  function updateOwnHp(current, max) {
+    document.getElementById('hp-bar').style.width =
+      Math.max(0, Math.round(current / max * 100)) + '%';
+    document.getElementById('hp-text').textContent = `${current} / ${max} HP`;
+  }
 
   function addFeedEntry(text) {
     if (feed.querySelector('.empty')) feed.innerHTML = '';
@@ -124,6 +150,37 @@
 
   socket.on('campaign_event', (data) => {
     addFeedEntry(data.text);
+  });
+
+  // The whole board arrives as one payload from whichever driver changed it --
+  // the human at /dm or the AI DM's tools -- so this just re-renders.
+  socket.on('encounter_update', (data) => {
+    const enc = data.encounter;
+    const card = document.getElementById('encounter-card');
+    if (!enc) { card.style.display = 'none'; return; }
+
+    card.style.display = '';
+    document.getElementById('enc-name').textContent = enc.name;
+    document.getElementById('enc-round').textContent = 'Round ' + enc.round;
+
+    const box = document.getElementById('enc-order');
+    box.innerHTML = '';
+    enc.combatants.forEach((c, i) => {
+      const pct = c.max_hp ? Math.max(0, Math.round(c.current_hp / c.max_hp * 100)) : 0;
+      const tone = pct > 50 ? '' : (pct > 20 ? 'hurt' : 'bad');
+      const mine = c.kind === 'character' && c.character_id === CHARACTER_ID;
+      // The sheet at the top is server-rendered, so without this it would still show
+      // your pre-fight HP while the board below showed the truth.
+      if (mine) updateOwnHp(c.current_hp, c.max_hp);
+      const el = document.createElement('div');
+      el.className = 'combatant' + (i === enc.turn_index ? ' turn' : '') + (c.is_down ? ' down' : '');
+      el.innerHTML = `
+        <div class="init">${c.initiative}</div>
+        <div class="nm">${c.name}<span class="tag">${mine ? 'you' : c.kind === 'monster' ? 'monster' : 'PC'}</span></div>
+        <div class="mini-bar-bg"><div class="mini-bar-fg ${tone}" style="width:${pct}%"></div></div>
+        <div class="hp">${c.current_hp}/${c.max_hp}</div>`;
+      box.appendChild(el);
+    });
   });
 
   // The DM's voice comes out of the server box, not this device, so the toggle is

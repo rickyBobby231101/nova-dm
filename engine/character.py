@@ -68,6 +68,31 @@ CREATE TABLE IF NOT EXISTS campaign_log (
     actor TEXT,
     content TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS encounters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    round INTEGER NOT NULL DEFAULT 1,
+    turn_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+-- max_hp/current_hp are for monsters only. A player character's HP lives in
+-- `characters` and nowhere else -- see engine/encounter.py. Two copies of a PC's
+-- HP would drift apart the moment either side took a hit.
+CREATE TABLE IF NOT EXISTS combatants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    encounter_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    character_id INTEGER,
+    monster_slug TEXT,
+    name TEXT NOT NULL,
+    max_hp INTEGER,
+    current_hp INTEGER,
+    ac INTEGER NOT NULL DEFAULT 10,
+    initiative INTEGER NOT NULL DEFAULT 0,
+    dex INTEGER NOT NULL DEFAULT 10,
+    is_down INTEGER NOT NULL DEFAULT 0
+);
 """
 
 

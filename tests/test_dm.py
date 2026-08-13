@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from engine import character, dm, voice
+from engine import character, dm, encounter, voice
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(character.SRD_DB_PATH),
@@ -121,6 +121,70 @@ def test_handle_player_action_runs_tool_loop_then_narrates():
     assert ("turn_complete", {"character_id": char["id"]}) == (
         socketio.emit.call_args_list[-1].args[0], socketio.emit.call_args_list[-1].args[1]
     )
+
+
+def test_start_encounter_tool_builds_the_board_and_broadcasts():
+    _make_character()
+    socketio = MagicMock()
+
+    state = dm._execute_tool(
+        "start_encounter",
+        {"name": "Goblin ambush", "monsters": [{"slug": "goblin", "count": 2}]},
+        socketio,
+    )
+
+    assert len(state["combatants"]) == 3  # 2 goblins + the PC
+    events = [c.args[0] for c in socketio.emit.call_args_list]
+    assert "encounter_update" in events
+
+
+def test_monster_attack_tool_reports_a_real_roll():
+    char = _make_character()
+    socketio = MagicMock()
+    state = dm._execute_tool(
+        "start_encounter", {"name": "fight", "monsters": [{"slug": "goblin", "count": 1}]}, socketio
+    )
+    goblin = next(c for c in state["combatants"] if c["kind"] == "monster")
+    pc = next(c for c in state["combatants"] if c["kind"] == "character")
+
+    result = dm._execute_tool(
+        "monster_attack",
+        {"combatant_id": goblin["id"], "action_name": "Scimitar", "target_id": pc["id"]},
+        socketio,
+    )
+
+    assert 1 <= result["d20"] <= 20
+    assert result["target_ac"] == char["ac"]
+
+
+def test_advance_turn_and_end_encounter_tools():
+    _make_character()
+    socketio = MagicMock()
+    dm._execute_tool("start_encounter", {"name": "fight", "monsters": [{"slug": "goblin", "count": 1}]}, socketio)
+
+    state = dm._execute_tool("advance_turn", {}, socketio)
+    assert state["turn_index"] == 1
+
+    assert dm._execute_tool("end_encounter", {}, socketio) == {"ended": True}
+    assert encounter.get_state() is None
+
+
+def test_context_gives_the_dm_the_real_board():
+    """The DM must narrate from the board, so the board has to be in its context."""
+    _make_character()
+    socketio = MagicMock()
+    dm._execute_tool("start_encounter", {"name": "Goblin ambush", "monsters": [{"slug": "goblin", "count": 1}]}, socketio)
+
+    context = dm._build_context(character.list_active_characters())
+
+    assert "Goblin ambush" in context
+    assert "combatant_id=" in context
+    assert ">>" in context  # current turn marker
+
+
+def test_context_says_so_when_no_encounter_is_running():
+    _make_character()
+    assert "No encounter is active" in dm._build_context(character.list_active_characters())
 
 
 def test_handle_player_action_speaks_the_narration():

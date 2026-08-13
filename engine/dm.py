@@ -6,10 +6,12 @@ import json
 
 import anthropic
 
-from . import character, dice, voice
+from . import character, dice, encounter, voice
 
 MODEL = "claude-opus-5"
-MAX_TOOL_ITERATIONS = 6
+# A combat round legitimately spends several calls (attack, damage, advance turn),
+# so the Phase 3 cap of 6 would bail out mid-fight.
+MAX_TOOL_ITERATIONS = 12
 
 SYSTEM_PROMPT = """You are the Dungeon Master for a live D&D 5e (SRD) tabletop session, with this app as the shared table. Players describe what their characters do in free text; you narrate outcomes and run the game.
 
@@ -20,6 +22,13 @@ Rules you must follow:
 - Call apply_damage / apply_heal to make HP changes real -- don't just narrate a character surviving a hit without recording the damage.
 - Keep narration tight: a paragraph or two, second person, evocative but not padded. This is live play at a table, not a novel.
 - Multiple characters may be present at the table. Address the acting character's character_id for tools; you may involve other listed characters narratively.
+
+Combat:
+- When a fight starts, call start_encounter with the SRD monster slugs and counts. That rolls initiative and hit points for real; don't describe a fight as "begun" without it.
+- Once an encounter is active, its initiative order and everyone's current HP are given to you below. Narrate from that board -- don't contradict it or track HP in your head.
+- Monsters attack via monster_attack, which rolls to-hit against the target's real AC and applies real damage. Never decide yourself whether a monster's attack hit.
+- Use advance_turn when a combatant's turn ends, and end_encounter when the fight is over.
+- damage_combatant and heal_combatant work on anyone in the encounter, monster or player; apply_damage and apply_heal remain for players outside of combat.
 """
 
 TOOLS = [
@@ -64,6 +73,74 @@ TOOLS = [
             "required": ["character_id", "amount"],
         },
     },
+    {
+        "name": "start_encounter",
+        "description": "Begin a combat encounter with SRD monsters. Rolls each monster's hit points and everyone's initiative for real. Use SRD slugs like 'goblin', 'orc', 'dire-wolf'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Short name for the fight, e.g. 'Goblin ambush'."},
+                "monsters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {"type": "string"},
+                            "count": {"type": "integer"},
+                        },
+                        "required": ["slug", "count"],
+                    },
+                },
+                "character_ids": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Which characters are in this fight. Use the ids of the characters listed at the table; omit only if everyone listed is involved.",
+                },
+            },
+            "required": ["name", "monsters"],
+        },
+    },
+    {
+        "name": "monster_attack",
+        "description": "Roll a monster's attack against another combatant. Rolls to-hit against the target's real AC and applies real damage on a hit. Never decide a monster's hit or damage yourself.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "combatant_id": {"type": "integer", "description": "The attacking monster's combatant id."},
+                "action_name": {"type": "string", "description": "The action's name, e.g. 'Scimitar'."},
+                "target_id": {"type": "integer", "description": "The target's combatant id."},
+            },
+            "required": ["combatant_id", "action_name", "target_id"],
+        },
+    },
+    {
+        "name": "damage_combatant",
+        "description": "Apply damage to anyone in the encounter, monster or player, by combatant id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"combatant_id": {"type": "integer"}, "amount": {"type": "integer"}},
+            "required": ["combatant_id", "amount"],
+        },
+    },
+    {
+        "name": "heal_combatant",
+        "description": "Heal anyone in the encounter, monster or player, by combatant id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"combatant_id": {"type": "integer"}, "amount": {"type": "integer"}},
+            "required": ["combatant_id", "amount"],
+        },
+    },
+    {
+        "name": "advance_turn",
+        "description": "End the current combatant's turn and move to the next in initiative order.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "end_encounter",
+        "description": "End the active encounter when the fight is over.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 def _clean_error_message(e: anthropic.APIError) -> str:
@@ -94,7 +171,34 @@ def _build_context(characters_at_table: list) -> str:
             f"STR {c['str']} DEX {c['dex']} CON {c['con']} INT {c['int_']} WIS {c['wis']} CHA {c['cha']}, "
             f"proficiency bonus +{c['proficiency_bonus']}"
         )
+
+    state = encounter.get_state()
+    if state:
+        lines.append(
+            f"\nActive encounter: {state['name']} -- round {state['round']}. Initiative order "
+            f"(current turn marked >>):"
+        )
+        for i, c in enumerate(state["combatants"]):
+            marker = ">>" if i == state["turn_index"] else "  "
+            down = " (down)" if c["is_down"] else ""
+            lines.append(
+                f"{marker} combatant_id={c['id']} {c['name']} [{c['kind']}] init {c['initiative']}, "
+                f"HP {c['current_hp']}/{c['max_hp']}, AC {c['ac']}{down}"
+            )
+    else:
+        lines.append("\nNo encounter is active.")
     return "\n".join(lines)
+
+
+def _emit(socketio, text: str, kind: str):
+    character.log_campaign_event(kind, "DM", text)
+    socketio.emit("campaign_event", {"text": text, "kind": kind}, room="campaign")
+
+
+def _broadcast_encounter(socketio):
+    """Every client renders the whole board from one payload, so any change the DM
+    makes -- and any the human DM screen makes -- lands the same way."""
+    socketio.emit("encounter_update", {"encounter": encounter.get_state()}, room="campaign")
 
 
 def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
@@ -138,6 +242,54 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
         character.log_campaign_event("heal", char["name"], text)
         socketio.emit("campaign_event", {"text": text, "kind": "hp"}, room="campaign")
         return result
+
+    if name == "start_encounter":
+        state = encounter.start_encounter(
+            tool_input.get("name"),
+            tool_input.get("monsters") or [],
+            character_ids=tool_input.get("character_ids"),
+        )
+        if not state:
+            return {"error": "could not start encounter"}
+        order = ", ".join(f"{c['name']} ({c['initiative']})" for c in state["combatants"])
+        _emit(socketio, f"Encounter: {state['name']}. Initiative -- {order}", "encounter")
+        _broadcast_encounter(socketio)
+        return state
+
+    if name == "monster_attack":
+        result = encounter.monster_attack(
+            tool_input["combatant_id"], tool_input.get("action_name"), tool_input["target_id"]
+        )
+        if "error" in result:
+            return result
+        _emit(socketio, result["text"], "attack")
+        _broadcast_encounter(socketio)
+        return result
+
+    if name in ("damage_combatant", "heal_combatant"):
+        fn = encounter.damage_combatant if name == "damage_combatant" else encounter.heal_combatant
+        result = fn(tool_input["combatant_id"], tool_input["amount"])
+        if "error" in result:
+            return result
+        _emit(socketio, result["text"], "hp")
+        _broadcast_encounter(socketio)
+        return result
+
+    if name == "advance_turn":
+        state = encounter.advance_turn()
+        if not state:
+            return {"error": "no active encounter"}
+        current = state["current"]
+        _emit(socketio, f"Round {state['round']} -- {current['name']}'s turn.", "encounter")
+        _broadcast_encounter(socketio)
+        return state
+
+    if name == "end_encounter":
+        ended = encounter.end_encounter()
+        if ended:
+            _emit(socketio, "The encounter ends.", "encounter")
+            _broadcast_encounter(socketio)
+        return {"ended": ended}
 
     return {"error": f"unknown tool: {name}"}
 

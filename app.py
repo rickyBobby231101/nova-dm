@@ -7,7 +7,7 @@ import socket as _socket
 from flask import Flask, jsonify, make_response, redirect, render_template, request, url_for
 from flask_socketio import SocketIO, emit, join_room
 
-from engine import character, dice, dm, voice
+from engine import character, dice, dm, encounter, voice
 
 app = Flask(__name__)
 app.secret_key = "nova-dm-lan-only"  # LAN-only, no real auth in scope -- see plan
@@ -76,6 +76,19 @@ def play():
     return render_template("player.html", player=player, character=char)
 
 
+@app.route("/dm")
+def dm_screen():
+    # Open on the LAN, same as everything else here -- whoever is running the game
+    # opens this page. No auth, deliberately: see the note on app.secret_key.
+    return render_template("dm.html", encounter=encounter.get_state(),
+                          characters=character.list_active_characters())
+
+
+@app.route("/api/encounter")
+def api_encounter():
+    return jsonify({"encounter": encounter.get_state()})
+
+
 @app.route("/api/character/<int:character_id>")
 def api_character(character_id):
     char = character.get_character(character_id)
@@ -87,8 +100,10 @@ def api_character(character_id):
 @socketio.on("connect")
 def on_connect():
     join_room(CAMPAIGN_ROOM)
-    # A device joining mid-session needs the current state of the shared speaker.
+    # A device joining mid-session needs the current state of the shared speaker
+    # and whatever fight is already underway.
     emit("voice_state", {"enabled": voice.is_enabled(), "available": voice.available()})
+    emit("encounter_update", {"encounter": encounter.get_state()})
 
 
 @socketio.on("roll_request")
@@ -115,6 +130,70 @@ def on_submit_action(data):
     if not action_text:
         return
     dm.handle_player_action(character_id, action_text, socketio)
+
+
+def _broadcast_encounter():
+    """One full-state payload after any change, from either driver -- the human at
+    /dm or the AI DM's tools. Small enough to send whole, and it keeps every device
+    correct regardless of which one moved."""
+    socketio.emit("encounter_update", {"encounter": encounter.get_state()}, room=CAMPAIGN_ROOM)
+
+
+@socketio.on("monster_search")
+def on_monster_search(data):
+    monsters = encounter.list_srd_monsters(
+        query=(data.get("query") or "").strip() or None,
+        max_cr=data.get("max_cr"),
+    )
+    emit("monster_results", {"monsters": monsters[:60]})
+
+
+@socketio.on("dm_start_encounter")
+def on_dm_start_encounter(data):
+    state = encounter.start_encounter(
+        data.get("name") or "Encounter",
+        data.get("monsters") or [],
+        character_ids=data.get("character_ids"),
+    )
+    order = ", ".join(f"{c['name']} ({c['initiative']})" for c in state["combatants"])
+    text = f"Encounter: {state['name']}. Initiative -- {order}"
+    character.log_campaign_event("encounter", "DM", text)
+    socketio.emit("campaign_event", {"text": text, "kind": "encounter"}, room=CAMPAIGN_ROOM)
+    _broadcast_encounter()
+
+
+@socketio.on("dm_damage")
+def on_dm_damage(data):
+    result = encounter.damage_combatant(data.get("combatant_id"), data.get("amount", 0))
+    if "error" not in result:
+        socketio.emit("campaign_event", {"text": result["text"], "kind": "hp"}, room=CAMPAIGN_ROOM)
+    _broadcast_encounter()
+
+
+@socketio.on("dm_heal")
+def on_dm_heal(data):
+    result = encounter.heal_combatant(data.get("combatant_id"), data.get("amount", 0))
+    if "error" not in result:
+        socketio.emit("campaign_event", {"text": result["text"], "kind": "hp"}, room=CAMPAIGN_ROOM)
+    _broadcast_encounter()
+
+
+@socketio.on("dm_next_turn")
+def on_dm_next_turn():
+    state = encounter.advance_turn()
+    if state:
+        text = f"Round {state['round']} -- {state['current']['name']}'s turn."
+        character.log_campaign_event("encounter", "DM", text)
+        socketio.emit("campaign_event", {"text": text, "kind": "encounter"}, room=CAMPAIGN_ROOM)
+    _broadcast_encounter()
+
+
+@socketio.on("dm_end_encounter")
+def on_dm_end_encounter():
+    if encounter.end_encounter():
+        socketio.emit("campaign_event", {"text": "The encounter ends.", "kind": "encounter"},
+                      room=CAMPAIGN_ROOM)
+    _broadcast_encounter()
 
 
 @socketio.on("set_voice")

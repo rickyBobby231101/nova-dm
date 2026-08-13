@@ -112,6 +112,64 @@ def test_roll_request_broadcasts_roll_result_and_logs_it():
     assert "Mira" in rows[0]["content"]
 
 
+def test_dm_screen_renders():
+    resp = app_module.app.test_client().get("/dm")
+    assert resp.status_code == 200
+    assert b"DM Screen" in resp.data
+
+
+def test_dm_can_run_a_fight_over_sockets():
+    """The human DM's controls and the players' view are the same round trip: one
+    encounter_update payload broadcast to the room."""
+    player = app_module.app.test_client()
+    player.post("/join", data={"name": "Chazel"})
+    create = player.post("/characters", data={
+        "name": "Mira", "race": "human", "class": "cleric",
+        "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
+    })
+    char_id = int(create.headers["Location"].rsplit("=", 1)[1])
+
+    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    player_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client.get_received()
+    player_client.get_received()
+
+    dm_client.emit("dm_start_encounter", {"name": "Ambush", "monsters": [{"slug": "goblin", "count": 2}]})
+
+    updates = [r for r in player_client.get_received() if r["name"] == "encounter_update"]
+    assert updates, "the player's device never heard the fight start"
+    state = updates[-1]["args"][0]["encounter"]
+    assert state["name"] == "Ambush"
+    assert len(state["combatants"]) == 3
+
+    goblin = next(c for c in state["combatants"] if c["kind"] == "monster")
+    dm_client.emit("dm_damage", {"combatant_id": goblin["id"], "amount": 2})
+    after = [r for r in dm_client.get_received() if r["name"] == "encounter_update"][-1]
+    hit = next(c for c in after["args"][0]["encounter"]["combatants"] if c["id"] == goblin["id"])
+    assert hit["current_hp"] == goblin["max_hp"] - 2
+
+    pc = next(c for c in state["combatants"] if c["kind"] == "character")
+    dm_client.emit("dm_damage", {"combatant_id": pc["id"], "amount": 3})
+    char = app_module.character.get_character(char_id)
+    assert char["current_hp"] == char["max_hp"] - 3
+
+    dm_client.emit("dm_next_turn")
+    turned = [r for r in dm_client.get_received() if r["name"] == "encounter_update"][-1]
+    assert turned["args"][0]["encounter"]["turn_index"] == 1
+
+    dm_client.emit("dm_end_encounter")
+    ended = [r for r in dm_client.get_received() if r["name"] == "encounter_update"][-1]
+    assert ended["args"][0]["encounter"] is None
+
+
+def test_monster_search_returns_srd_matches():
+    client = SocketIOTestClient(app_module.app, app_module.socketio)
+    client.get_received()
+    client.emit("monster_search", {"query": "goblin"})
+    results = [r for r in client.get_received() if r["name"] == "monster_results"][-1]
+    assert any(m["slug"] == "goblin" for m in results["args"][0]["monsters"])
+
+
 def test_set_voice_is_room_wide():
     """The speaker is the server box, so muting from one phone has to mute the
     room and update every other device's toggle."""
