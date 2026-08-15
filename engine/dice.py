@@ -19,6 +19,18 @@ def roll(expr: str) -> dict:
     return {"expr": expr, "rolls": rolls, "modifier": modifier, "total": sum(rolls) + modifier}
 
 
+def roll_d20(adv: str = None) -> dict:
+    """One d20, or two and keep the right one. Every d20 in the game comes
+    through here -- ability checks, saves and monster attacks alike -- so
+    advantage is implemented once instead of per call site.
+    adv: None | 'advantage' | 'disadvantage'."""
+    d20s = [random.randint(1, 20)]
+    if adv in ("advantage", "disadvantage"):
+        d20s.append(random.randint(1, 20))
+    d20 = max(d20s) if adv == "advantage" else min(d20s) if adv == "disadvantage" else d20s[0]
+    return {"d20": d20, "d20_rolls": d20s, "adv": adv}
+
+
 def roll_check(character: dict, ability: str, proficient: bool = False, adv: str = None) -> dict:
     """ability: 'str'/'dex'/'con'/'int_'/'wis'/'cha' (matches character dict keys).
     adv: None | 'advantage' | 'disadvantage'."""
@@ -27,10 +39,7 @@ def roll_check(character: dict, ability: str, proficient: bool = False, adv: str
     if proficient:
         mod += character.get("proficiency_bonus", 2)
 
-    d20s = [random.randint(1, 20)]
-    if adv in ("advantage", "disadvantage"):
-        d20s.append(random.randint(1, 20))
-    d20 = max(d20s) if adv == "advantage" else min(d20s) if adv == "disadvantage" else d20s[0]
+    rolled = roll_d20(adv)
 
-    return {"ability": ability, "d20": d20, "d20_rolls": d20s, "modifier": mod,
-            "total": d20 + mod, "proficient": proficient, "adv": adv}
+    return {"ability": ability, "d20": rolled["d20"], "d20_rolls": rolled["d20_rolls"],
+            "modifier": mod, "total": rolled["d20"] + mod, "proficient": proficient, "adv": adv}

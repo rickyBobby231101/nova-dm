@@ -6,7 +6,7 @@ import json
 
 import anthropic
 
-from . import character, dice, encounter, voice
+from . import character, conditions, dice, encounter, voice
 
 MODEL = "claude-opus-5"
 # A combat round legitimately spends several calls (attack, damage, advance turn),
@@ -132,6 +132,31 @@ TOOLS = [
         },
     },
     {
+        "name": "apply_condition",
+        "description": "Put an SRD condition on a combatant (poisoned, prone, restrained, stunned, frightened, blinded, charmed, grappled, incapacitated, invisible, paralyzed, petrified, deafened, unconscious, exhaustion). The engine applies the resulting advantage or disadvantage to later rolls by itself.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "combatant_id": {"type": "integer"},
+                "condition": {"type": "string"},
+                "level": {"type": "integer", "description": "Exhaustion tier 1-6; omit for other conditions."},
+            },
+            "required": ["combatant_id", "condition"],
+        },
+    },
+    {
+        "name": "remove_condition",
+        "description": "Clear a condition from a combatant when it ends.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "combatant_id": {"type": "integer"},
+                "condition": {"type": "string"},
+            },
+            "required": ["combatant_id", "condition"],
+        },
+    },
+    {
         "name": "advance_turn",
         "description": "End the current combatant's turn and move to the next in initiative order.",
         "input_schema": {"type": "object", "properties": {}},
@@ -181,10 +206,18 @@ def _build_context(characters_at_table: list) -> str:
         for i, c in enumerate(state["combatants"]):
             marker = ">>" if i == state["turn_index"] else "  "
             down = " (down)" if c["is_down"] else ""
+            active = conditions.describe(c.get("conditions"))
+            tag = f", conditions: {active}" if active else ""
+            if not c.get("can_act", True):
+                tag += " -- cannot act"
             lines.append(
                 f"{marker} combatant_id={c['id']} {c['name']} [{c['kind']}] init {c['initiative']}, "
-                f"HP {c['current_hp']}/{c['max_hp']}, AC {c['ac']}{down}"
+                f"HP {c['current_hp']}/{c['max_hp']}, AC {c['ac']}{down}{tag}"
             )
+        lines.append(
+            "Advantage and disadvantage from these conditions are applied by the engine "
+            "automatically -- narrate the effect, but do not adjust the roll yourself."
+        )
     else:
         lines.append("\nNo encounter is active.")
     return "\n".join(lines)
@@ -207,10 +240,16 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
         if not char:
             return {"error": "unknown character"}
         adv = tool_input.get("advantage", "none")
+        # Whatever the DM asked for is combined with what the character's own
+        # conditions impose -- one cancels the other per the SRD.
+        adv = conditions.combine(
+            adv if adv != "none" else None,
+            conditions.check_advantage(json.loads(char["conditions_json"] or "[]")),
+        )
         result = dice.roll_check(
             char, tool_input["ability"],
             proficient=tool_input.get("proficient", False),
-            adv=adv if adv != "none" else None,
+            adv=adv,
         )
         advtag = f" ({result['adv']})" if result["adv"] else ""
         text = f"{char['name']} rolls {tool_input['ability'].upper()}{advtag}: {result['d20']}+{result['modifier']}={result['total']}"
@@ -272,6 +311,21 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
         if "error" in result:
             return result
         _emit(socketio, result["text"], "hp")
+        _broadcast_encounter(socketio)
+        return result
+
+    if name in ("apply_condition", "remove_condition"):
+        if name == "apply_condition":
+            result = encounter.apply_condition(
+                tool_input["combatant_id"], tool_input.get("condition"), tool_input.get("level")
+            )
+        else:
+            result = encounter.remove_condition(
+                tool_input["combatant_id"], tool_input.get("condition")
+            )
+        if "error" in result:
+            return result
+        _emit(socketio, result["text"], "condition")
         _broadcast_encounter(socketio)
         return result
 

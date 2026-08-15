@@ -91,7 +91,10 @@ CREATE TABLE IF NOT EXISTS combatants (
     ac INTEGER NOT NULL DEFAULT 10,
     initiative INTEGER NOT NULL DEFAULT 0,
     dex INTEGER NOT NULL DEFAULT 10,
-    is_down INTEGER NOT NULL DEFAULT 0
+    is_down INTEGER NOT NULL DEFAULT 0,
+    -- monsters only, for the same reason as max_hp above: a player's conditions
+    -- live on the character and outlast the fight, a monster's don't outlast it.
+    conditions_json TEXT NOT NULL DEFAULT '[]'
 );
 """
 

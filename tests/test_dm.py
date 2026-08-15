@@ -169,6 +169,79 @@ def test_advance_turn_and_end_encounter_tools():
     assert encounter.get_state() is None
 
 
+def test_condition_tools_apply_and_clear():
+    _make_character()
+    socketio = MagicMock()
+    state = dm._execute_tool(
+        "start_encounter", {"name": "fight", "monsters": [{"slug": "goblin", "count": 1}]}, socketio
+    )
+    goblin = next(c for c in state["combatants"] if c["kind"] == "monster")
+
+    applied = dm._execute_tool(
+        "apply_condition", {"combatant_id": goblin["id"], "condition": "prone"}, socketio
+    )
+    assert applied["conditions"] == [{"name": "prone"}]
+
+    cleared = dm._execute_tool(
+        "remove_condition", {"combatant_id": goblin["id"], "condition": "prone"}, socketio
+    )
+    assert cleared["conditions"] == []
+
+
+def test_condition_tool_reports_immunity_rather_than_lying():
+    _make_character()
+    socketio = MagicMock()
+    state = dm._execute_tool(
+        "start_encounter", {"name": "deep", "monsters": [{"slug": "aboleth-nihilith", "count": 1}]},
+        socketio,
+    )
+    beast = next(c for c in state["combatants"] if c["kind"] == "monster")
+
+    result = dm._execute_tool(
+        "apply_condition", {"combatant_id": beast["id"], "condition": "charmed"}, socketio
+    )
+
+    assert "error" in result and "immune" in result["error"]
+
+
+def test_context_lists_conditions_and_says_advantage_is_automatic():
+    """The DM has to know the state of the board, and must not re-apply advantage
+    on top of what the engine already did."""
+    _make_character()
+    socketio = MagicMock()
+    state = dm._execute_tool(
+        "start_encounter", {"name": "fight", "monsters": [{"slug": "goblin", "count": 1}]}, socketio
+    )
+    goblin = next(c for c in state["combatants"] if c["kind"] == "monster")
+    dm._execute_tool("apply_condition", {"combatant_id": goblin["id"], "condition": "stunned"},
+                     socketio)
+
+    context = dm._build_context(character.list_active_characters())
+
+    assert "conditions: stunned" in context
+    assert "cannot act" in context
+    assert "applied by the engine" in context
+
+
+def test_roll_check_tool_merges_conditions_with_the_requested_advantage():
+    """Poisoned imposes disadvantage; an explicitly requested advantage cancels it
+    rather than one silently winning."""
+    char = _make_character()
+    socketio = MagicMock()
+    with character._campaign_con() as con:
+        con.execute("UPDATE characters SET conditions_json=? WHERE id=?",
+                    ('[{"name": "poisoned"}]', char["id"]))
+
+    result = dm._execute_tool(
+        "roll_check",
+        {"character_id": char["id"], "ability": "str", "proficient": False, "advantage": "advantage"},
+        socketio,
+    )
+
+    assert result["adv"] is None
+    assert len(result["d20_rolls"]) == 1
+
+
 def test_context_gives_the_dm_the_real_board():
     """The DM must narrate from the board, so the board has to be in its context."""
     _make_character()

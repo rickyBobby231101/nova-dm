@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -173,6 +174,136 @@ def test_advance_turn_wraps_and_increments_round():
     state = encounter.advance_turn()
     assert state["turn_index"] == 0
     assert state["round"] == 2
+
+
+def test_condition_on_a_player_lands_in_characters_not_combatants():
+    """Same source-of-truth split as hit points: a player's conditions outlast the
+    fight, a monster's don't exist outside it."""
+    char = _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    pc = _pcs(state)[0]
+
+    result = encounter.apply_condition(pc["id"], "poisoned")
+
+    assert "error" not in result
+    stored = json.loads(character.get_character(char["id"])["conditions_json"])
+    assert stored == [{"name": "poisoned"}]
+    with character._campaign_con() as con:
+        row = con.execute("SELECT conditions_json FROM combatants WHERE id=?", (pc["id"],)).fetchone()
+    assert json.loads(row["conditions_json"]) == []
+
+
+def test_condition_on_a_monster_lands_in_combatants():
+    char = _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin = _monsters(state)[0]
+
+    encounter.apply_condition(goblin["id"], "prone")
+
+    assert encounter.get_combatant(goblin["id"])["conditions"] == [{"name": "prone"}]
+    assert json.loads(character.get_character(char["id"])["conditions_json"]) == []
+
+
+def test_conditions_survive_into_the_broadcast_state():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin = _monsters(state)[0]
+
+    encounter.apply_condition(goblin["id"], "stunned")
+    refreshed = next(c for c in encounter.get_state()["combatants"] if c["id"] == goblin["id"])
+
+    assert refreshed["conditions"] == [{"name": "stunned"}]
+    assert refreshed["can_act"] is False
+
+
+def test_removing_a_condition_clears_it():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin = _monsters(state)[0]
+    encounter.apply_condition(goblin["id"], "prone")
+
+    encounter.remove_condition(goblin["id"], "prone")
+
+    assert encounter.get_combatant(goblin["id"])["conditions"] == []
+
+
+def test_a_monster_immune_to_a_condition_refuses_it():
+    """1620 of the 3207 creatures publish condition immunities -- recording one
+    anyway would quietly change the dice for the rest of the fight."""
+    _make_character()
+    state = encounter.start_encounter("deep", [{"slug": "aboleth-nihilith", "count": 1}])
+    beast = _monsters(state)[0]
+
+    result = encounter.apply_condition(beast["id"], "charmed")
+
+    assert "error" in result and "immune to charmed" in result["error"]
+    assert encounter.get_combatant(beast["id"])["conditions"] == []
+
+
+def test_a_monster_without_that_immunity_accepts_it():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin = _monsters(state)[0]
+
+    assert "error" not in encounter.apply_condition(goblin["id"], "charmed")
+
+
+def test_exhaustion_level_round_trips_through_storage():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin = _monsters(state)[0]
+
+    encounter.apply_condition(goblin["id"], "exhaustion", 4)
+
+    assert encounter.get_combatant(goblin["id"])["conditions"] == [
+        {"name": "exhaustion", "level": 4}
+    ]
+
+
+def test_monster_attack_takes_advantage_against_a_prone_target():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin, pc = _monsters(state)[0], _pcs(state)[0]
+    encounter.apply_condition(pc["id"], "prone")
+
+    result = encounter.monster_attack(goblin["id"], "Scimitar", pc["id"])
+
+    assert result["adv"] == "advantage"
+    assert len(result["d20_rolls"]) == 2
+    assert result["d20"] == max(result["d20_rolls"])
+    assert "advantage" in result["text"]
+
+
+def test_monster_attack_suffers_disadvantage_while_poisoned():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin, pc = _monsters(state)[0], _pcs(state)[0]
+    encounter.apply_condition(goblin["id"], "poisoned")
+
+    result = encounter.monster_attack(goblin["id"], "Scimitar", pc["id"])
+
+    assert result["adv"] == "disadvantage"
+    assert result["d20"] == min(result["d20_rolls"])
+
+
+def test_opposing_conditions_cancel_back_to_a_straight_roll():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin, pc = _monsters(state)[0], _pcs(state)[0]
+    encounter.apply_condition(goblin["id"], "poisoned")
+    encounter.apply_condition(pc["id"], "prone")
+
+    result = encounter.monster_attack(goblin["id"], "Scimitar", pc["id"])
+
+    assert result["adv"] is None
+    assert len(result["d20_rolls"]) == 1
+
+
+def test_conditions_reference_data_is_available():
+    listed = encounter.list_conditions()
+    assert len(listed) == 15
+    poisoned = next(c for c in listed if c["slug"] == "poisoned")
+    assert poisoned["description"], "conditions need their SRD text for the DM screen"
 
 
 def test_monster_attack_rolls_against_real_ac_and_applies_damage():

@@ -41,6 +41,13 @@
   .results .m { display:flex; justify-content:space-between; align-items:center; padding:4px 0;
                 border-bottom:1px solid #2a2e3a; font-size:12px; }
   .picked { font-size:12px; color:#9098ac; margin-top:8px; }
+  .chips { display:flex; flex-wrap:wrap; gap:5px; margin:2px 0 0 34px; }
+  .chip { font-size:10px; letter-spacing:.04em; text-transform:uppercase; padding:2px 7px;
+          border-radius:10px; background:#2a2e3a; color:#c8ccdc; cursor:pointer; }
+  .chip:hover { background:#3a3f52; }
+  .chip.warn { background:#4a3a1c; color:#e8cf9a; }
+  .chip.bad { background:#4a1f22; color:#ffb3b3; cursor:default; }
+  select.cond-pick { font-size:11px; padding:3px; width:auto; }
   .party-row { display:flex; align-items:center; gap:7px; font-size:12px; padding:3px 0; }
 </style>
 </head>
@@ -104,6 +111,12 @@
 <script>
   const socket = io();
   const feed = document.getElementById('feed');
+  // The 15 SRD conditions with their rules text, so a chip's tooltip can say what
+  // the condition actually does instead of just naming it.
+  const CONDITIONS = {{ conditions | tojson }};
+  const CONDITION_TEXT = CONDITIONS.reduce((acc, c) => (acc[c.slug] = c.description, acc), {});
+  const CONDITION_OPTIONS = CONDITIONS
+    .map((c) => `<option value="${c.slug}">${c.slug}</option>`).join('');
   let picked = {};   // slug -> {name, count}
   let state = null;
 
@@ -151,8 +164,33 @@
       controls.innerHTML = `
         <input type="number" min="0" value="1" id="amt-${c.id}">
         <button class="mini" onclick="applyHp('dm_damage', ${c.id})">DMG</button>
-        <button class="mini" onclick="applyHp('dm_heal', ${c.id})">HEAL</button>`;
+        <button class="mini" onclick="applyHp('dm_heal', ${c.id})">HEAL</button>
+        <select class="cond-pick" id="cond-${c.id}" onchange="onConditionPick(${c.id})">${CONDITION_OPTIONS}</select>
+        <input type="number" min="1" max="6" value="1" id="exh-${c.id}" style="display:none" title="Exhaustion level">
+        <button class="mini" onclick="addCondition(${c.id})">+COND</button>`;
       el.appendChild(controls);
+
+      // Chips: click one to clear it. Also where "cannot act" shows up.
+      if (c.conditions && c.conditions.length) {
+        const chips = document.createElement('div');
+        chips.className = 'chips';
+        c.conditions.forEach((cd) => {
+          const chip = document.createElement('span');
+          chip.className = 'chip' + (cd.name === 'exhaustion' ? ' warn' : '');
+          chip.textContent = cd.name === 'exhaustion' ? `${cd.name} ${cd.level}` : cd.name;
+          chip.title = (CONDITION_TEXT[cd.name] || '') + '\n\n(click to clear)';
+          chip.onclick = () => socket.emit('dm_condition',
+            {apply: false, combatant_id: c.id, condition: cd.name});
+          chips.appendChild(chip);
+        });
+        if (!c.can_act) {
+          const cant = document.createElement('span');
+          cant.className = 'chip bad';
+          cant.textContent = 'cannot act';
+          chips.appendChild(cant);
+        }
+        el.appendChild(chips);
+      }
       box.appendChild(el);
     });
   }
@@ -160,6 +198,21 @@
   function applyHp(event, id) {
     const amount = parseInt(document.getElementById('amt-' + id).value, 10) || 0;
     socket.emit(event, {combatant_id: id, amount});
+  }
+
+  function addCondition(id) {
+    const name = document.getElementById('cond-' + id).value;
+    const payload = {apply: true, combatant_id: id, condition: name};
+    if (name === 'exhaustion') {
+      // Inline input rather than a prompt() -- a modal dialog blocks the page.
+      payload.level = parseInt(document.getElementById('exh-' + id).value, 10) || 1;
+    }
+    socket.emit('dm_condition', payload);
+  }
+
+  function onConditionPick(id) {
+    document.getElementById('exh-' + id).style.display =
+      document.getElementById('cond-' + id).value === 'exhaustion' ? '' : 'none';
   }
 
   // ── builder ───────────────────────────────────────────────────────────────

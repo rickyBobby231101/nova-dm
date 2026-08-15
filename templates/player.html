@@ -48,6 +48,10 @@
   .mini-bar-bg { background:#12141a; border-radius:4px; height:6px; width:56px; overflow:hidden; }
   .mini-bar-fg { background:#4caf7d; height:100%; }
   .mini-bar-fg.hurt { background:#c9a227; } .mini-bar-fg.bad { background:#a33; }
+  .combatant .conds { font-size:10px; color:#c9a227; text-transform:uppercase; letter-spacing:.04em; }
+  #own-conditions { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
+  #own-conditions .chip { font-size:10px; letter-spacing:.04em; text-transform:uppercase;
+                          padding:3px 8px; border-radius:10px; background:#4a3a1c; color:#e8cf9a; }
 </style>
 </head>
 <body>
@@ -59,6 +63,7 @@
     <div class="meta">Level {{ character.level }} · XP {{ character.xp }} · AC {{ character.ac }} · Speed {{ character.speed }}ft</div>
     <div class="hp-bar-bg"><div class="hp-bar-fg" id="hp-bar" style="width:{{ (character.current_hp / character.max_hp * 100)|round|int }}%"></div></div>
     <div class="hp-text" id="hp-text">{{ character.current_hp }} / {{ character.max_hp }} HP{% if character.temp_hp %} (+{{ character.temp_hp }} temp){% endif %}</div>
+    <div id="own-conditions" style="display:none"></div>
     <div class="abilities">
       {% for key, label in [('str','STR'),('dex','DEX'),('con','CON'),('int_','INT'),('wis','WIS'),('cha','CHA')] %}
       <div class="ability">
@@ -110,6 +115,17 @@
   const CHARACTER_ID = {{ character.id }};
   const socket = io();
   const feed = document.getElementById('feed');
+
+  // Your own conditions sit on the sheet, not just in the initiative list --
+  // they're the thing that changes your next roll.
+  function renderOwnConditions(list) {
+    const box = document.getElementById('own-conditions');
+    if (!list.length) { box.style.display = 'none'; return; }
+    box.style.display = '';
+    box.innerHTML = list
+      .map((cd) => `<span class="chip">${cd.name === 'exhaustion' ? cd.name + ' ' + cd.level : cd.name}</span>`)
+      .join('');
+  }
 
   function updateOwnHp(current, max) {
     document.getElementById('hp-bar').style.width =
@@ -174,12 +190,18 @@
       if (mine) updateOwnHp(c.current_hp, c.max_hp);
       const el = document.createElement('div');
       el.className = 'combatant' + (i === enc.turn_index ? ' turn' : '') + (c.is_down ? ' down' : '');
+      const conds = (c.conditions || [])
+        .map((cd) => cd.name === 'exhaustion' ? `${cd.name} ${cd.level}` : cd.name);
+      if (!c.can_act) conds.push('cannot act');
       el.innerHTML = `
         <div class="init">${c.initiative}</div>
-        <div class="nm">${c.name}<span class="tag">${mine ? 'you' : c.kind === 'monster' ? 'monster' : 'PC'}</span></div>
+        <div class="nm">${c.name}<span class="tag">${mine ? 'you' : c.kind === 'monster' ? 'monster' : 'PC'}</span>
+          ${conds.length ? `<div class="conds">${conds.join(' · ')}</div>` : ''}</div>
         <div class="mini-bar-bg"><div class="mini-bar-fg ${tone}" style="width:${pct}%"></div></div>
         <div class="hp">${c.current_hp}/${c.max_hp}</div>`;
       box.appendChild(el);
+
+      if (mine) renderOwnConditions(c.conditions || []);
     });
   });
 

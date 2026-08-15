@@ -32,6 +32,7 @@ from engine import rules  # noqa: E402  (path set above)
 
 BASE = "https://www.dnd5eapi.co/api/2014"
 OPEN5E_MONSTERS = "https://api.open5e.com/v1/monsters/?limit=500"
+OPEN5E_CONDITIONS = "https://api.open5e.com/v1/conditions/?limit=100"
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "db", "srd.sqlite")
 
 HIT_RE = re.compile(r"([+-]\d+)\s+to hit")
@@ -64,6 +65,9 @@ CREATE TABLE IF NOT EXISTS monsters (
 );
 CREATE TABLE IF NOT EXISTS equipment (
     "index" TEXT PRIMARY KEY, name TEXT, category TEXT, raw_json TEXT
+);
+CREATE TABLE IF NOT EXISTS conditions (
+    "index" TEXT PRIMARY KEY, name TEXT, description TEXT, raw_json TEXT
 );
 CREATE TABLE IF NOT EXISTS features (
     "index" TEXT PRIMARY KEY, name TEXT, class_index TEXT, level INTEGER, raw_json TEXT
@@ -206,6 +210,21 @@ def ingest_monsters(con):
     print(f"  {armed}/{len(monsters)} have a rollable attack")
 
 
+def ingest_conditions(con):
+    """The 15 SRD conditions with their rules text, from the same open source as
+    the monsters -- the DM screen shows these so nobody has to remember what
+    'restrained' does."""
+    results = get(OPEN5E_CONDITIONS, timeout=30)["results"]
+    print(f"conditions: {len(results)}")
+    for c in results:
+        con.execute(
+            'INSERT OR REPLACE INTO conditions ("index", name, description, raw_json)'
+            " VALUES (?,?,?,?)",
+            (c["slug"], c["name"], c.get("desc") or "", json.dumps(c)),
+        )
+    con.commit()
+
+
 def ingest_simple(con, endpoint: str, table: str, extra_cols):
     items = fetch_all(endpoint)
     print(f"{table}: {len(items)}")
@@ -232,6 +251,7 @@ def main():
     ingest_simple(con, "spells", "spells",
                   {"level": lambda d: d.get("level"), "school": lambda d: d.get("school", {}).get("name")})
     ingest_monsters(con)
+    ingest_conditions(con)
     ingest_simple(con, "equipment", "equipment",
                   {"category": lambda d: d.get("equipment_category", {}).get("name")})
 

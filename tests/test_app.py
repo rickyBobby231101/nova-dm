@@ -241,6 +241,73 @@ def test_dm_can_run_a_fight_over_sockets():
     assert ended["args"][0]["encounter"] is None
 
 
+def test_dm_can_apply_and_clear_a_condition_over_sockets():
+    player = app_module.app.test_client()
+    player.post("/join", data={"name": "Chazel"})
+    create = player.post("/characters", data={
+        "name": "Mira", "race": "human", "class": "cleric",
+        "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
+    })
+    char_id = int(create.headers["Location"].rsplit("=", 1)[1])
+
+    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client.get_received()
+    dm_client.emit("dm_start_encounter",
+                   {"name": "Ambush", "monsters": [{"slug": "goblin", "count": 1}],
+                    "character_ids": [char_id]})
+    state = [r for r in dm_client.get_received() if r["name"] == "encounter_update"][-1]
+    pc = next(c for c in state["args"][0]["encounter"]["combatants"] if c["kind"] == "character")
+
+    dm_client.emit("dm_condition", {"apply": True, "combatant_id": pc["id"], "condition": "prone"})
+    after = [r for r in dm_client.get_received() if r["name"] == "encounter_update"][-1]
+    updated = next(c for c in after["args"][0]["encounter"]["combatants"] if c["id"] == pc["id"])
+    assert updated["conditions"] == [{"name": "prone"}]
+
+    dm_client.emit("dm_condition", {"apply": False, "combatant_id": pc["id"], "condition": "prone"})
+    cleared = [r for r in dm_client.get_received() if r["name"] == "encounter_update"][-1]
+    updated = next(c for c in cleared["args"][0]["encounter"]["combatants"] if c["id"] == pc["id"])
+    assert updated["conditions"] == []
+
+
+def test_immunity_refusal_is_announced_to_the_table():
+    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client.get_received()
+    dm_client.emit("dm_start_encounter",
+                   {"name": "Deep", "monsters": [{"slug": "aboleth-nihilith", "count": 1}],
+                    "character_ids": []})
+    state = [r for r in dm_client.get_received() if r["name"] == "encounter_update"][-1]
+    beast = state["args"][0]["encounter"]["combatants"][0]
+
+    dm_client.emit("dm_condition",
+                   {"apply": True, "combatant_id": beast["id"], "condition": "charmed"})
+
+    texts = [r["args"][0]["text"] for r in dm_client.get_received()
+             if r["name"] == "campaign_event"]
+    assert any("immune to charmed" in t for t in texts)
+
+
+def test_a_poisoned_character_rolls_checks_at_disadvantage():
+    """The player doesn't have to remember -- the server applies it."""
+    player = app_module.app.test_client()
+    player.post("/join", data={"name": "Chazel"})
+    create = player.post("/characters", data={
+        "name": "Mira", "race": "human", "class": "cleric",
+        "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
+    })
+    char_id = int(create.headers["Location"].rsplit("=", 1)[1])
+    with app_module.character._campaign_con() as con:
+        con.execute("UPDATE characters SET conditions_json=? WHERE id=?",
+                    ('[{"name": "poisoned"}]', char_id))
+
+    client = SocketIOTestClient(app_module.app, app_module.socketio)
+    client.get_received()
+    client.emit("roll_request", {"character_id": char_id, "ability": "wis", "proficient": True})
+
+    result = [r for r in client.get_received() if r["name"] == "roll_result"][-1]["args"][0]
+    assert result["adv"] == "disadvantage"
+    assert result["d20"] == min(result["d20_rolls"])
+
+
 def test_monster_search_returns_srd_matches():
     client = SocketIOTestClient(app_module.app, app_module.socketio)
     client.get_received()

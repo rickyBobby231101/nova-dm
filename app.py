@@ -8,7 +8,7 @@ import socket as _socket
 from flask import Flask, jsonify, make_response, redirect, render_template, request, url_for
 from flask_socketio import SocketIO, emit, join_room
 
-from engine import character, dice, dm, encounter, portable, voice
+from engine import character, conditions, dice, dm, encounter, portable, voice
 
 app = Flask(__name__)
 app.secret_key = "nova-dm-lan-only"  # LAN-only, no real auth in scope -- see plan
@@ -126,7 +126,8 @@ def dm_screen():
     # Open on the LAN, same as everything else here -- whoever is running the game
     # opens this page. No auth, deliberately: see the note on app.secret_key.
     return render_template("dm.html", encounter=encounter.get_state(),
-                          characters=character.list_active_characters())
+                          characters=character.list_active_characters(),
+                          conditions=encounter.list_conditions())
 
 
 @app.route("/api/encounter")
@@ -160,7 +161,9 @@ def on_roll_request(data):
     if not char:
         emit("roll_result", {"error": "unknown character"})
         return
-    result = dice.roll_check(char, ability, proficient=proficient)
+    # A poisoned character rolls at disadvantage whether or not they remember to.
+    adv = conditions.check_advantage(json.loads(char["conditions_json"] or "[]"))
+    result = dice.roll_check(char, ability, proficient=proficient, adv=adv)
     character.log_campaign_event(
         "roll", char["name"],
         f"{char['name']} rolls {ability}: {result['d20']}+{result['modifier']}={result['total']}"
@@ -220,6 +223,23 @@ def on_dm_heal(data):
     result = encounter.heal_combatant(data.get("combatant_id"), data.get("amount", 0))
     if "error" not in result:
         socketio.emit("campaign_event", {"text": result["text"], "kind": "hp"}, room=CAMPAIGN_ROOM)
+    _broadcast_encounter()
+
+
+@socketio.on("dm_condition")
+def on_dm_condition(data):
+    fn = encounter.apply_condition if data.get("apply") else encounter.remove_condition
+    args = [data.get("combatant_id"), data.get("condition")]
+    if data.get("apply"):
+        args.append(data.get("level"))
+    result = fn(*args)
+    if "error" in result:
+        # Immunity refusals are worth showing the table, not swallowing.
+        socketio.emit("campaign_event", {"text": result["error"], "kind": "condition"},
+                      room=CAMPAIGN_ROOM)
+    else:
+        socketio.emit("campaign_event", {"text": result["text"], "kind": "condition"},
+                      room=CAMPAIGN_ROOM)
     _broadcast_encounter()
 
 

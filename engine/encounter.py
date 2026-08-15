@@ -14,6 +14,7 @@ import json
 from datetime import datetime
 
 from . import character, dice, rules
+from . import conditions as cond
 
 # Open5e's title for the WotC SRD statblocks, as stored in monsters.source.
 CORE_SOURCE = "5e Core Rules"
@@ -62,6 +63,14 @@ def list_srd_monsters(query: str = None, max_cr: float = None) -> list:
     sql += f" ORDER BY (source = '{CORE_SOURCE}') DESC, name, cr"
     with character._srd_con() as con:
         return [dict(r) for r in con.execute(sql, params).fetchall()]
+
+
+def list_conditions() -> list:
+    with character._srd_con() as con:
+        rows = con.execute(
+            'SELECT "index" AS slug, name, description FROM conditions ORDER BY name'
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_srd_monster(slug: str) -> dict | None:
@@ -161,9 +170,12 @@ def get_state() -> dict | None:
             if not char:
                 continue
             entry["current_hp"], entry["max_hp"] = char["current_hp"], char["max_hp"]
+            entry["conditions"] = cond.normalize(json.loads(char["conditions_json"] or "[]"))
         else:
             entry["current_hp"], entry["max_hp"] = row["current_hp"], row["max_hp"]
+            entry["conditions"] = cond.normalize(json.loads(row["conditions_json"] or "[]"))
         entry["is_down"] = entry["current_hp"] <= 0
+        entry["can_act"] = cond.can_act(entry["conditions"])
         combatants.append(entry)
 
     turn_index = enc["turn_index"] % len(combatants) if combatants else 0
@@ -229,6 +241,67 @@ def heal_combatant(combatant_id: int, amount: int) -> dict:
             "current_hp": current, "max_hp": target["max_hp"], "text": text}
 
 
+def _immunities(slug: str) -> set:
+    """Open5e stores these as a comma-separated string ('charmed, frightened').
+    1620 of the 3207 creatures have them, so they're worth honouring."""
+    data = get_srd_monster(slug) or {}
+    raw = data.get("condition_immunities") or ""
+    if isinstance(raw, list):
+        parts = [str(x) for x in raw]
+    else:
+        parts = str(raw).split(",")
+    return {p.strip().lower() for p in parts if p.strip()}
+
+
+def _write_conditions(target: dict, value: list):
+    payload = json.dumps(value)
+    with character._campaign_con() as con:
+        if target["kind"] == "character":
+            con.execute("UPDATE characters SET conditions_json=? WHERE id=?",
+                        (payload, target["character_id"]))
+        else:
+            con.execute("UPDATE combatants SET conditions_json=? WHERE id=?",
+                        (payload, target["id"]))
+
+
+def apply_condition(combatant_id: int, name: str, level=None) -> dict:
+    target = get_combatant(combatant_id)
+    if not target:
+        return {"error": "unknown combatant"}
+    name = str(name or "").strip().lower()
+    if not name:
+        return {"error": "no condition given"}
+
+    if target["kind"] == "monster" and name in _immunities(target["monster_slug"]):
+        # Recording a condition the creature is immune to would quietly change the
+        # dice for the rest of the fight, so refuse rather than store it.
+        return {"error": f"{target['name']} is immune to {name}"}
+
+    updated = cond.add(target["conditions"], name, level)
+    _write_conditions(target, updated)
+
+    label = cond.describe([c for c in updated if c["name"] == name])
+    text = f"{target['name']} is {label}"
+    character.log_campaign_event("condition", target["name"], text)
+    return {"combatant_id": combatant_id, "name": target["name"], "condition": name,
+            "conditions": updated, "text": text}
+
+
+def remove_condition(combatant_id: int, name: str) -> dict:
+    target = get_combatant(combatant_id)
+    if not target:
+        return {"error": "unknown combatant"}
+    name = str(name or "").strip().lower()
+
+    updated = cond.remove(target["conditions"], name)
+    _write_conditions(target, updated)
+
+    text = f"{target['name']} is no longer {name}"
+    character.log_campaign_event("condition", target["name"], text)
+    return {"combatant_id": combatant_id, "name": target["name"], "condition": name,
+            "conditions": updated, "text": text}
+
+
 def monster_attack(combatant_id: int, action_name: str, target_id: int) -> dict:
     """Roll a monster's attack against another combatant. The to-hit bonus and
     damage dice come from the SRD; the d20 and the damage roll come from
@@ -246,27 +319,34 @@ def monster_attack(combatant_id: int, action_name: str, target_id: int) -> dict:
         return {"error": f"{attacker['name']} has no attack action in the SRD"}
 
     action = next((a for a in actions if a["name"].lower() == (action_name or "").lower()), actions[0])
-    attack_roll = dice.roll("1d20")
-    d20 = attack_roll["rolls"][0]
+
+    # Conditions on either side change the roll -- the engine applies this, so
+    # nobody has to remember that prone grants advantage mid-fight.
+    adv = cond.attack_advantage(attacker["conditions"], target["conditions"])
+    rolled = dice.roll_d20(adv)
+    d20 = rolled["d20"]
     total = d20 + action["attack_bonus"]
     hit = d20 == 20 or (d20 != 1 and total >= target["ac"])
+    adv_tag = f" ({adv})" if adv else ""
 
     result = {
         "attacker": attacker["name"], "action": action["name"], "target": target["name"],
-        "d20": d20, "attack_bonus": action["attack_bonus"], "attack_total": total,
+        "d20": d20, "d20_rolls": rolled["d20_rolls"], "adv": adv,
+        "attack_bonus": action["attack_bonus"], "attack_total": total,
         "target_ac": target["ac"], "hit": hit, "critical": d20 == 20, "damage": 0,
     }
 
     if not hit:
-        result["text"] = (f"{attacker['name']} attacks {target['name']} with {action['name']}: "
-                          f"{d20}+{action['attack_bonus']}={total} vs AC {target['ac']} -- miss")
+        result["text"] = (f"{attacker['name']} attacks {target['name']} with {action['name']}"
+                          f"{adv_tag}: {d20}+{action['attack_bonus']}={total} "
+                          f"vs AC {target['ac']} -- miss")
         character.log_campaign_event("attack", attacker["name"], result["text"])
         return result
 
     rolled = _roll_expr(action["damage_dice"])
     damage = max(0, rolled["total"]) if rolled else 0
     result["damage"] = damage
-    result["text"] = (f"{attacker['name']} hits {target['name']} with {action['name']}: "
+    result["text"] = (f"{attacker['name']} hits {target['name']} with {action['name']}{adv_tag}: "
                       f"{d20}+{action['attack_bonus']}={total} vs AC {target['ac']} for {damage}")
     character.log_campaign_event("attack", attacker["name"], result["text"])
 
