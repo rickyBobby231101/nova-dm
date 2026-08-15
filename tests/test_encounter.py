@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import threading
 
 import pytest
 
@@ -258,6 +259,133 @@ def test_exhaustion_level_round_trips_through_storage():
     assert encounter.get_combatant(goblin["id"])["conditions"] == [
         {"name": "exhaustion", "level": 4}
     ]
+
+
+def _advance_to_round(target_round):
+    """Turn over the whole initiative order until the given round is reached."""
+    state = encounter.get_state()
+    while state["round"] < target_round:
+        state = encounter.advance_turn()
+    return state
+
+
+def test_a_timed_condition_expires_when_its_rounds_run_out():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin = _monsters(state)[0]
+
+    encounter.apply_condition(goblin["id"], "prone", duration_rounds=2)
+    assert encounter.get_combatant(goblin["id"])["conditions"][0]["name"] == "prone"
+
+    _advance_to_round(2)
+    assert encounter.get_combatant(goblin["id"])["conditions"], "should survive its second round"
+
+    _advance_to_round(3)
+    assert encounter.get_combatant(goblin["id"])["conditions"] == []
+
+
+def test_expiry_is_announced_so_the_table_sees_it_end():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin = _monsters(state)[0]
+    encounter.apply_condition(goblin["id"], "stunned", duration_rounds=1)
+
+    state = encounter.get_state()
+    while state["round"] < 2:
+        state = encounter.advance_turn()
+
+    assert any("no longer stunned" in e["text"] for e in state["expired_conditions"])
+
+
+def test_an_undated_condition_is_never_swept_away():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin = _monsters(state)[0]
+    encounter.apply_condition(goblin["id"], "poisoned")
+
+    _advance_to_round(6)
+
+    assert encounter.get_combatant(goblin["id"])["conditions"] == [{"name": "poisoned"}]
+
+
+def test_state_reports_rounds_remaining():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin = _monsters(state)[0]
+    encounter.apply_condition(goblin["id"], "restrained", duration_rounds=3)
+
+    assert encounter.get_combatant(goblin["id"])["conditions"][0]["remaining"] == 3
+    _advance_to_round(2)
+    assert encounter.get_combatant(goblin["id"])["conditions"][0]["remaining"] == 2
+
+
+def test_timed_conditions_are_cleared_when_the_fight_ends():
+    """Rounds only exist inside an encounter, so a duration counted in them has
+    nothing left to count -- it would otherwise sit on a character forever."""
+    char = _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    pc = _pcs(state)[0]
+    encounter.apply_condition(pc["id"], "restrained", duration_rounds=5)
+    encounter.apply_condition(pc["id"], "poisoned")
+
+    encounter.end_encounter()
+
+    stored = json.loads(character.get_character(char["id"])["conditions_json"])
+    assert stored == [{"name": "poisoned"}], "only the open-ended condition should survive"
+
+
+def test_a_new_fight_does_not_inherit_a_stale_countdown():
+    """Round numbers restart, so a duration from the last fight would expire at
+    the wrong time -- or never."""
+    char = _make_character()
+    state = encounter.start_encounter("first", [{"slug": "goblin", "count": 1}])
+    pc = _pcs(state)[0]
+    encounter.apply_condition(pc["id"], "restrained", duration_rounds=9)
+
+    encounter.start_encounter("second", [{"slug": "goblin", "count": 1}])
+
+    assert json.loads(character.get_character(char["id"])["conditions_json"]) == []
+
+
+def test_expiry_actually_restores_the_dice():
+    """The point of the countdown: when prone runs out, attacks stop having
+    advantage."""
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin, pc = _monsters(state)[0], _pcs(state)[0]
+    encounter.apply_condition(pc["id"], "prone", duration_rounds=1)
+
+    assert encounter.monster_attack(goblin["id"], "Scimitar", pc["id"])["adv"] == "advantage"
+
+    _advance_to_round(2)
+    character.apply_heal(pc["character_id"], 999)
+
+    assert encounter.monster_attack(goblin["id"], "Scimitar", pc["id"])["adv"] is None
+
+
+def test_concurrent_changes_do_not_clobber_each_other():
+    """Each socket event runs on its own thread, so two changes landing together
+    used to lose one: applying two conditions in quick succession dropped the
+    first, and simultaneous damage lost hit points the same way."""
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    goblin = _monsters(state)[0]
+    encounter.heal_combatant(goblin["id"], 999)
+    starting_hp = encounter.get_combatant(goblin["id"])["current_hp"]
+
+    names = ["prone", "poisoned", "blinded", "restrained", "charmed", "deafened"]
+    threads = [threading.Thread(target=encounter.apply_condition, args=(goblin["id"], n))
+               for n in names]
+    threads += [threading.Thread(target=encounter.damage_combatant, args=(goblin["id"], 1))
+                for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    final = encounter.get_combatant(goblin["id"])
+    assert {c["name"] for c in final["conditions"]} == set(names)
+    assert final["current_hp"] == max(0, starting_hp - 6)
 
 
 def test_monster_attack_takes_advantage_against_a_prone_target():

@@ -44,6 +44,75 @@ def test_remove_is_a_noop_for_something_not_present():
     assert cond.remove([{"name": "prone"}], "poisoned") == [{"name": "prone"}]
 
 
+# ── durations ─────────────────────────────────────────────────────────────────
+
+def test_a_condition_with_no_duration_lasts_until_cleared():
+    applied = cond.add([], "poisoned")
+    assert "expires_round" not in applied[0]
+    assert cond.remaining_rounds(applied[0], current_round=99) is None
+
+
+def test_duration_counts_the_round_it_was_applied_in():
+    """One round means 'this round' -- gone at the start of the next."""
+    applied = cond.add([], "prone", duration_rounds=1, current_round=4)
+    assert applied[0]["expires_round"] == 4
+    assert cond.remaining_rounds(applied[0], 4) == 1
+
+    three = cond.add([], "prone", duration_rounds=3, current_round=4)
+    assert three[0]["expires_round"] == 6
+    assert [cond.remaining_rounds(three[0], r) for r in (4, 5, 6, 7)] == [3, 2, 1, 0]
+
+
+@pytest.mark.parametrize("bad", [0, -2, None, "soon"])
+def test_a_nonsense_duration_means_no_duration(bad):
+    applied = cond.add([], "poisoned", duration_rounds=bad, current_round=2)
+    assert "expires_round" not in applied[0]
+
+
+def test_expire_splits_what_survives_from_what_ran_out():
+    active = cond.add([], "prone", duration_rounds=2, current_round=1)      # through round 2
+    active = cond.add(active, "poisoned")                                    # indefinite
+    active = cond.add(active, "stunned", duration_rounds=1, current_round=1)  # round 1 only
+
+    kept, done = cond.expire(active, current_round=2)
+    assert {c["name"] for c in kept} == {"prone", "poisoned"}
+    assert [c["name"] for c in done] == ["stunned"]
+
+    kept, done = cond.expire(kept, current_round=3)
+    assert [c["name"] for c in kept] == ["poisoned"]
+    assert [c["name"] for c in done] == ["prone"]
+
+
+def test_reapplying_refreshes_the_duration():
+    applied = cond.add([], "poisoned", duration_rounds=2, current_round=1)
+    refreshed = cond.add(applied, "poisoned", duration_rounds=2, current_round=3)
+    assert refreshed[0]["expires_round"] == 4
+    assert len(refreshed) == 1
+
+
+def test_drop_timed_keeps_the_open_ended_ones():
+    active = cond.add([], "prone", duration_rounds=3, current_round=1)
+    active = cond.add(active, "poisoned")
+
+    kept, dropped = cond.drop_timed(active)
+
+    assert [c["name"] for c in kept] == ["poisoned"]
+    assert [c["name"] for c in dropped] == ["prone"]
+
+
+def test_describe_shows_the_countdown_when_asked():
+    active = cond.add([], "poisoned", duration_rounds=3, current_round=1)
+    assert cond.describe(active) == "poisoned"
+    assert cond.describe(active, current_round=1) == "poisoned (3 rd)"
+    assert cond.describe(active, current_round=3) == "poisoned (1 rd)"
+
+
+def test_expiry_survives_normalizing_from_storage():
+    """Durations go through JSON, so they have to come back as ints."""
+    stored = [{"name": "prone", "expires_round": "5"}]
+    assert cond.normalize(stored)[0]["expires_round"] == 5
+
+
 # ── the advantage rules ───────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("attacker,target,expected", [

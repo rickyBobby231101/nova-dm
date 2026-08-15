@@ -48,6 +48,7 @@
   .chip.warn { background:#4a3a1c; color:#e8cf9a; }
   .chip.bad { background:#4a1f22; color:#ffb3b3; cursor:default; }
   select.cond-pick { font-size:11px; padding:3px; width:auto; }
+  input.dur { width:46px; }
   .party-row { display:flex; align-items:center; gap:7px; font-size:12px; padding:3px 0; }
 </style>
 </head>
@@ -167,6 +168,7 @@
         <button class="mini" onclick="applyHp('dm_heal', ${c.id})">HEAL</button>
         <select class="cond-pick" id="cond-${c.id}" onchange="onConditionPick(${c.id})">${CONDITION_OPTIONS}</select>
         <input type="number" min="1" max="6" value="1" id="exh-${c.id}" style="display:none" title="Exhaustion level">
+        <input type="number" min="1" placeholder="rds" id="dur-${c.id}" class="dur" title="Rounds it lasts -- leave blank to last until cleared">
         <button class="mini" onclick="addCondition(${c.id})">+COND</button>`;
       el.appendChild(controls);
 
@@ -177,7 +179,8 @@
         c.conditions.forEach((cd) => {
           const chip = document.createElement('span');
           chip.className = 'chip' + (cd.name === 'exhaustion' ? ' warn' : '');
-          chip.textContent = cd.name === 'exhaustion' ? `${cd.name} ${cd.level}` : cd.name;
+          const base = cd.name === 'exhaustion' ? `${cd.name} ${cd.level}` : cd.name;
+          chip.textContent = cd.remaining !== undefined ? `${base} · ${cd.remaining}` : base;
           chip.title = (CONDITION_TEXT[cd.name] || '') + '\n\n(click to clear)';
           chip.onclick = () => socket.emit('dm_condition',
             {apply: false, combatant_id: c.id, condition: cd.name});
@@ -207,6 +210,9 @@
       // Inline input rather than a prompt() -- a modal dialog blocks the page.
       payload.level = parseInt(document.getElementById('exh-' + id).value, 10) || 1;
     }
+    // Blank means it lasts until someone clears it.
+    const rounds = parseInt(document.getElementById('dur-' + id).value, 10);
+    if (rounds >= 1) payload.duration_rounds = rounds;
     socket.emit('dm_condition', payload);
   }
 

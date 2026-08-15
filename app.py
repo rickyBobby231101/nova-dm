@@ -228,11 +228,13 @@ def on_dm_heal(data):
 
 @socketio.on("dm_condition")
 def on_dm_condition(data):
-    fn = encounter.apply_condition if data.get("apply") else encounter.remove_condition
-    args = [data.get("combatant_id"), data.get("condition")]
     if data.get("apply"):
-        args.append(data.get("level"))
-    result = fn(*args)
+        result = encounter.apply_condition(
+            data.get("combatant_id"), data.get("condition"),
+            data.get("level"), data.get("duration_rounds"),
+        )
+    else:
+        result = encounter.remove_condition(data.get("combatant_id"), data.get("condition"))
     if "error" in result:
         # Immunity refusals are worth showing the table, not swallowing.
         socketio.emit("campaign_event", {"text": result["error"], "kind": "condition"},
@@ -247,6 +249,11 @@ def on_dm_condition(data):
 def on_dm_next_turn():
     state = encounter.advance_turn()
     if state:
+        # Anything that ran out this round is announced, so effects visibly end
+        # rather than just stopping.
+        for ended in state.get("expired_conditions") or []:
+            socketio.emit("campaign_event", {"text": ended["text"], "kind": "condition"},
+                          room=CAMPAIGN_ROOM)
         text = f"Round {state['round']} -- {state['current']['name']}'s turn."
         character.log_campaign_event("encounter", "DM", text)
         socketio.emit("campaign_event", {"text": text, "kind": "encounter"}, room=CAMPAIGN_ROOM)

@@ -269,6 +269,31 @@ def test_dm_can_apply_and_clear_a_condition_over_sockets():
     assert updated["conditions"] == []
 
 
+def test_a_timed_condition_counts_down_and_is_announced_when_it_ends():
+    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client.get_received()
+    dm_client.emit("dm_start_encounter",
+                   {"name": "Ambush", "monsters": [{"slug": "goblin", "count": 1}],
+                    "character_ids": []})
+    state = [r for r in dm_client.get_received() if r["name"] == "encounter_update"][-1]
+    goblin = state["args"][0]["encounter"]["combatants"][0]
+
+    dm_client.emit("dm_condition", {"apply": True, "combatant_id": goblin["id"],
+                                    "condition": "prone", "duration_rounds": 1})
+    after = [r for r in dm_client.get_received() if r["name"] == "encounter_update"][-1]
+    chip = after["args"][0]["encounter"]["combatants"][0]["conditions"][0]
+    assert chip["remaining"] == 1
+
+    # one combatant, so a single turn wraps the round
+    dm_client.emit("dm_next_turn")
+    received = dm_client.get_received()
+    texts = [r["args"][0]["text"] for r in received if r["name"] == "campaign_event"]
+    assert any("no longer prone" in t for t in texts)
+
+    final = [r for r in received if r["name"] == "encounter_update"][-1]
+    assert final["args"][0]["encounter"]["combatants"][0]["conditions"] == []
+
+
 def test_immunity_refusal_is_announced_to_the_table():
     dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
     dm_client.get_received()

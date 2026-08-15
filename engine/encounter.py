@@ -11,6 +11,7 @@ engine.character.apply_damage. Anything else gives a PC two HP values that drift
 apart the first time one of them is touched.
 """
 import json
+import threading
 from datetime import datetime
 
 from . import character, dice, rules
@@ -18,6 +19,13 @@ from . import conditions as cond
 
 # Open5e's title for the WotC SRD statblocks, as stored in monsters.source.
 CORE_SOURCE = "5e Core Rules"
+
+# Every change to a combatant is read-modify-write: load the board, change one
+# number or list, write it back. SocketIO's threading mode runs each event in its
+# own thread, so two of those overlapping loses one of them -- applying two
+# conditions in quick succession really did drop the first. Reentrant because
+# monster_attack applies damage while already holding it.
+_board_lock = threading.RLock()
 
 
 def _roll_expr(expr) -> dict | None:
@@ -176,6 +184,12 @@ def get_state() -> dict | None:
             entry["conditions"] = cond.normalize(json.loads(row["conditions_json"] or "[]"))
         entry["is_down"] = entry["current_hp"] <= 0
         entry["can_act"] = cond.can_act(entry["conditions"])
+        # Precomputed so every client shows the same countdown rather than each
+        # re-deriving it. Absent entirely when a condition lasts until cleared.
+        for c in entry["conditions"]:
+            left = cond.remaining_rounds(c, enc["round"])
+            if left is not None:
+                c["remaining"] = left
         combatants.append(entry)
 
     turn_index = enc["turn_index"] % len(combatants) if combatants else 0
@@ -194,51 +208,53 @@ def get_combatant(combatant_id: int) -> dict | None:
 
 
 def damage_combatant(combatant_id: int, amount: int) -> dict:
-    target = get_combatant(combatant_id)
-    if not target:
-        return {"error": "unknown combatant"}
-    amount = max(0, int(amount))
+    with _board_lock:
+        target = get_combatant(combatant_id)
+        if not target:
+            return {"error": "unknown combatant"}
+        amount = max(0, int(amount))
 
-    if target["kind"] == "character":
-        result = character.apply_damage(target["character_id"], amount)
-        current = result["current_hp"]
-    else:
-        current = max(0, target["current_hp"] - amount)
-        with character._campaign_con() as con:
-            con.execute(
-                "UPDATE combatants SET current_hp=?, is_down=? WHERE id=?",
-                (current, 1 if current <= 0 else 0, combatant_id),
-            )
+        if target["kind"] == "character":
+            result = character.apply_damage(target["character_id"], amount)
+            current = result["current_hp"]
+        else:
+            current = max(0, target["current_hp"] - amount)
+            with character._campaign_con() as con:
+                con.execute(
+                    "UPDATE combatants SET current_hp=?, is_down=? WHERE id=?",
+                    (current, 1 if current <= 0 else 0, combatant_id),
+                )
 
-    text = f"{target['name']} takes {amount} damage -> {current}/{target['max_hp']} HP"
-    if current <= 0:
-        text += " (down)"
-    character.log_campaign_event("damage", target["name"], text)
-    return {"combatant_id": combatant_id, "name": target["name"], "amount": amount,
-            "current_hp": current, "max_hp": target["max_hp"], "is_down": current <= 0,
-            "text": text}
+        text = f"{target['name']} takes {amount} damage -> {current}/{target['max_hp']} HP"
+        if current <= 0:
+            text += " (down)"
+        character.log_campaign_event("damage", target["name"], text)
+        return {"combatant_id": combatant_id, "name": target["name"], "amount": amount,
+                "current_hp": current, "max_hp": target["max_hp"], "is_down": current <= 0,
+                "text": text}
 
 
 def heal_combatant(combatant_id: int, amount: int) -> dict:
-    target = get_combatant(combatant_id)
-    if not target:
-        return {"error": "unknown combatant"}
-    amount = max(0, int(amount))
+    with _board_lock:
+        target = get_combatant(combatant_id)
+        if not target:
+            return {"error": "unknown combatant"}
+        amount = max(0, int(amount))
 
-    if target["kind"] == "character":
-        result = character.apply_heal(target["character_id"], amount)
-        current = result["current_hp"]
-    else:
-        current = min(target["max_hp"], target["current_hp"] + amount)
-        with character._campaign_con() as con:
-            con.execute(
-                "UPDATE combatants SET current_hp=?, is_down=0 WHERE id=?", (current, combatant_id)
-            )
+        if target["kind"] == "character":
+            result = character.apply_heal(target["character_id"], amount)
+            current = result["current_hp"]
+        else:
+            current = min(target["max_hp"], target["current_hp"] + amount)
+            with character._campaign_con() as con:
+                con.execute(
+                    "UPDATE combatants SET current_hp=?, is_down=0 WHERE id=?", (current, combatant_id)
+                )
 
-    text = f"{target['name']} heals {amount} -> {current}/{target['max_hp']} HP"
-    character.log_campaign_event("heal", target["name"], text)
-    return {"combatant_id": combatant_id, "name": target["name"], "amount": amount,
-            "current_hp": current, "max_hp": target["max_hp"], "text": text}
+        text = f"{target['name']} heals {amount} -> {current}/{target['max_hp']} HP"
+        character.log_campaign_event("heal", target["name"], text)
+        return {"combatant_id": combatant_id, "name": target["name"], "amount": amount,
+                "current_hp": current, "max_hp": target["max_hp"], "text": text}
 
 
 def _immunities(slug: str) -> set:
@@ -264,116 +280,166 @@ def _write_conditions(target: dict, value: list):
                         (payload, target["id"]))
 
 
-def apply_condition(combatant_id: int, name: str, level=None) -> dict:
-    target = get_combatant(combatant_id)
-    if not target:
-        return {"error": "unknown combatant"}
-    name = str(name or "").strip().lower()
-    if not name:
-        return {"error": "no condition given"}
+def apply_condition(combatant_id: int, name: str, level=None, duration_rounds=None) -> dict:
+    with _board_lock:
+        target = get_combatant(combatant_id)
+        if not target:
+            return {"error": "unknown combatant"}
+        name = str(name or "").strip().lower()
+        if not name:
+            return {"error": "no condition given"}
 
-    if target["kind"] == "monster" and name in _immunities(target["monster_slug"]):
-        # Recording a condition the creature is immune to would quietly change the
-        # dice for the rest of the fight, so refuse rather than store it.
-        return {"error": f"{target['name']} is immune to {name}"}
+        if target["kind"] == "monster" and name in _immunities(target["monster_slug"]):
+            # Recording a condition the creature is immune to would quietly change the
+            # dice for the rest of the fight, so refuse rather than store it.
+            return {"error": f"{target['name']} is immune to {name}"}
 
-    updated = cond.add(target["conditions"], name, level)
-    _write_conditions(target, updated)
+        state = get_state()
+        current_round = state["round"] if state else 1
+        updated = cond.add(target["conditions"], name, level, duration_rounds, current_round)
+        _write_conditions(target, updated)
 
-    label = cond.describe([c for c in updated if c["name"] == name])
-    text = f"{target['name']} is {label}"
-    character.log_campaign_event("condition", target["name"], text)
-    return {"combatant_id": combatant_id, "name": target["name"], "condition": name,
-            "conditions": updated, "text": text}
+        label = cond.describe([c for c in updated if c["name"] == name], current_round)
+        text = f"{target['name']} is {label}"
+        character.log_campaign_event("condition", target["name"], text)
+        return {"combatant_id": combatant_id, "name": target["name"], "condition": name,
+                "conditions": updated, "text": text}
 
 
 def remove_condition(combatant_id: int, name: str) -> dict:
-    target = get_combatant(combatant_id)
-    if not target:
-        return {"error": "unknown combatant"}
-    name = str(name or "").strip().lower()
+    with _board_lock:
+        target = get_combatant(combatant_id)
+        if not target:
+            return {"error": "unknown combatant"}
+        name = str(name or "").strip().lower()
 
-    updated = cond.remove(target["conditions"], name)
-    _write_conditions(target, updated)
+        updated = cond.remove(target["conditions"], name)
+        _write_conditions(target, updated)
 
-    text = f"{target['name']} is no longer {name}"
-    character.log_campaign_event("condition", target["name"], text)
-    return {"combatant_id": combatant_id, "name": target["name"], "condition": name,
-            "conditions": updated, "text": text}
+        text = f"{target['name']} is no longer {name}"
+        character.log_campaign_event("condition", target["name"], text)
+        return {"combatant_id": combatant_id, "name": target["name"], "condition": name,
+                "conditions": updated, "text": text}
 
 
 def monster_attack(combatant_id: int, action_name: str, target_id: int) -> dict:
     """Roll a monster's attack against another combatant. The to-hit bonus and
     damage dice come from the SRD; the d20 and the damage roll come from
     engine.dice."""
-    attacker = get_combatant(combatant_id)
-    target = get_combatant(target_id)
-    if not attacker or attacker["kind"] != "monster":
-        return {"error": "unknown monster combatant"}
-    if not target:
-        return {"error": "unknown target"}
+    with _board_lock:
+        attacker = get_combatant(combatant_id)
+        target = get_combatant(target_id)
+        if not attacker or attacker["kind"] != "monster":
+            return {"error": "unknown monster combatant"}
+        if not target:
+            return {"error": "unknown target"}
 
-    data = get_srd_monster(attacker["monster_slug"])
-    actions = usable_actions(data or {})
-    if not actions:
-        return {"error": f"{attacker['name']} has no attack action in the SRD"}
+        data = get_srd_monster(attacker["monster_slug"])
+        actions = usable_actions(data or {})
+        if not actions:
+            return {"error": f"{attacker['name']} has no attack action in the SRD"}
 
-    action = next((a for a in actions if a["name"].lower() == (action_name or "").lower()), actions[0])
+        action = next((a for a in actions if a["name"].lower() == (action_name or "").lower()), actions[0])
 
-    # Conditions on either side change the roll -- the engine applies this, so
-    # nobody has to remember that prone grants advantage mid-fight.
-    adv = cond.attack_advantage(attacker["conditions"], target["conditions"])
-    rolled = dice.roll_d20(adv)
-    d20 = rolled["d20"]
-    total = d20 + action["attack_bonus"]
-    hit = d20 == 20 or (d20 != 1 and total >= target["ac"])
-    adv_tag = f" ({adv})" if adv else ""
+        # Conditions on either side change the roll -- the engine applies this, so
+        # nobody has to remember that prone grants advantage mid-fight.
+        adv = cond.attack_advantage(attacker["conditions"], target["conditions"])
+        rolled = dice.roll_d20(adv)
+        d20 = rolled["d20"]
+        total = d20 + action["attack_bonus"]
+        hit = d20 == 20 or (d20 != 1 and total >= target["ac"])
+        adv_tag = f" ({adv})" if adv else ""
 
-    result = {
-        "attacker": attacker["name"], "action": action["name"], "target": target["name"],
-        "d20": d20, "d20_rolls": rolled["d20_rolls"], "adv": adv,
-        "attack_bonus": action["attack_bonus"], "attack_total": total,
-        "target_ac": target["ac"], "hit": hit, "critical": d20 == 20, "damage": 0,
-    }
+        result = {
+            "attacker": attacker["name"], "action": action["name"], "target": target["name"],
+            "d20": d20, "d20_rolls": rolled["d20_rolls"], "adv": adv,
+            "attack_bonus": action["attack_bonus"], "attack_total": total,
+            "target_ac": target["ac"], "hit": hit, "critical": d20 == 20, "damage": 0,
+        }
 
-    if not hit:
-        result["text"] = (f"{attacker['name']} attacks {target['name']} with {action['name']}"
-                          f"{adv_tag}: {d20}+{action['attack_bonus']}={total} "
-                          f"vs AC {target['ac']} -- miss")
+        if not hit:
+            result["text"] = (f"{attacker['name']} attacks {target['name']} with {action['name']}"
+                              f"{adv_tag}: {d20}+{action['attack_bonus']}={total} "
+                              f"vs AC {target['ac']} -- miss")
+            character.log_campaign_event("attack", attacker["name"], result["text"])
+            return result
+
+        rolled = _roll_expr(action["damage_dice"])
+        damage = max(0, rolled["total"]) if rolled else 0
+        result["damage"] = damage
+        result["text"] = (f"{attacker['name']} hits {target['name']} with {action['name']}{adv_tag}: "
+                          f"{d20}+{action['attack_bonus']}={total} vs AC {target['ac']} for {damage}")
         character.log_campaign_event("attack", attacker["name"], result["text"])
+
+        applied = damage_combatant(target_id, damage)
+        result["target_current_hp"] = applied.get("current_hp")
+        result["target_is_down"] = applied.get("is_down")
         return result
 
-    rolled = _roll_expr(action["damage_dice"])
-    damage = max(0, rolled["total"]) if rolled else 0
-    result["damage"] = damage
-    result["text"] = (f"{attacker['name']} hits {target['name']} with {action['name']}{adv_tag}: "
-                      f"{d20}+{action['attack_bonus']}={total} vs AC {target['ac']} for {damage}")
-    character.log_campaign_event("attack", attacker["name"], result["text"])
 
-    applied = damage_combatant(target_id, damage)
-    result["target_current_hp"] = applied.get("current_hp")
-    result["target_is_down"] = applied.get("is_down")
-    return result
+def expire_conditions(current_round: int) -> list:
+    """Drop conditions whose last round has passed. Returns what ended, so the
+    table is told rather than having effects quietly stop mattering."""
+    with _board_lock:
+        state = get_state()
+        if not state:
+            return []
+
+        ended = []
+        for combatant in state["combatants"]:
+            kept, done = cond.expire(combatant["conditions"], current_round)
+            if not done:
+                continue
+            _write_conditions(combatant, kept)
+            for c in done:
+                text = f"{combatant['name']} is no longer {c['name']}"
+                character.log_campaign_event("condition", combatant["name"], text)
+                ended.append({"combatant_id": combatant["id"], "name": combatant["name"],
+                              "condition": c["name"], "text": text})
+        return ended
 
 
 def advance_turn() -> dict | None:
-    state = get_state()
-    if not state or not state["combatants"]:
-        return None
-    next_index = state["turn_index"] + 1
-    round_ = state["round"] + 1 if next_index >= len(state["combatants"]) else state["round"]
-    with character._campaign_con() as con:
-        con.execute(
-            "UPDATE encounters SET turn_index=?, round=? WHERE id=?",
-            (next_index % len(state["combatants"]), round_, state["id"]),
-        )
-    return get_state()
+    with _board_lock:
+        state = get_state()
+        if not state or not state["combatants"]:
+            return None
+        next_index = state["turn_index"] + 1
+        wrapped = next_index >= len(state["combatants"])
+        round_ = state["round"] + 1 if wrapped else state["round"]
+        with character._campaign_con() as con:
+            con.execute(
+                "UPDATE encounters SET turn_index=?, round=? WHERE id=?",
+                (next_index % len(state["combatants"]), round_, state["id"]),
+            )
+
+        # Durations are measured in rounds, so they only come due when one turns over.
+        expired = expire_conditions(round_) if wrapped else []
+        new_state = get_state()
+        if new_state is not None:
+            new_state["expired_conditions"] = expired
+        return new_state
 
 
 def end_encounter() -> bool:
-    with character._campaign_con() as con:
-        cur = con.execute("UPDATE encounters SET status='ended' WHERE status='active'")
-        ended = cur.rowcount > 0
-    if ended:
-        character.log_campaign_event("encounter", "DM", "The encounter ends.")
-    return ended
+    with _board_lock:
+        state = get_state()
+        if state:
+            # A duration counted in rounds has nothing left to count once initiative
+            # stops, and would otherwise sit on a character forever. Conditions with
+            # no duration are the DM's to clear and are left alone.
+            for combatant in state["combatants"]:
+                kept, dropped = cond.drop_timed(combatant["conditions"])
+                if dropped:
+                    _write_conditions(combatant, kept)
+                    character.log_campaign_event(
+                        "condition", combatant["name"],
+                        f"{combatant['name']} is no longer {cond.describe(dropped)}",
+                    )
+
+        with character._campaign_con() as con:
+            cur = con.execute("UPDATE encounters SET status='ended' WHERE status='active'")
+            ended = cur.rowcount > 0
+        if ended:
+            character.log_campaign_event("encounter", "DM", "The encounter ends.")
+        return ended

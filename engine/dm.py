@@ -140,6 +140,10 @@ TOOLS = [
                 "combatant_id": {"type": "integer"},
                 "condition": {"type": "string"},
                 "level": {"type": "integer", "description": "Exhaustion tier 1-6; omit for other conditions."},
+                "duration_rounds": {
+                    "type": "integer",
+                    "description": "How many rounds it lasts, counting the current one. The engine clears it automatically when it runs out. Omit for something that lasts until it is removed.",
+                },
             },
             "required": ["combatant_id", "condition"],
         },
@@ -317,7 +321,8 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
     if name in ("apply_condition", "remove_condition"):
         if name == "apply_condition":
             result = encounter.apply_condition(
-                tool_input["combatant_id"], tool_input.get("condition"), tool_input.get("level")
+                tool_input["combatant_id"], tool_input.get("condition"),
+                tool_input.get("level"), tool_input.get("duration_rounds"),
             )
         else:
             result = encounter.remove_condition(
@@ -334,6 +339,8 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
         if not state:
             return {"error": "no active encounter"}
         current = state["current"]
+        for ended in state.get("expired_conditions") or []:
+            _emit(socketio, ended["text"], "condition")
         _emit(socketio, f"Round {state['round']} -- {current['name']}'s turn.", "encounter")
         _broadcast_encounter(socketio)
         return state

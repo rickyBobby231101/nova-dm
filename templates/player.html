@@ -122,9 +122,11 @@
     const box = document.getElementById('own-conditions');
     if (!list.length) { box.style.display = 'none'; return; }
     box.style.display = '';
-    box.innerHTML = list
-      .map((cd) => `<span class="chip">${cd.name === 'exhaustion' ? cd.name + ' ' + cd.level : cd.name}</span>`)
-      .join('');
+    box.innerHTML = list.map((cd) => {
+      const base = cd.name === 'exhaustion' ? `${cd.name} ${cd.level}` : cd.name;
+      const left = cd.remaining !== undefined ? ` · ${cd.remaining} rd` : '';
+      return `<span class="chip">${base}${left}</span>`;
+    }).join('');
   }
 
   function updateOwnHp(current, max) {
@@ -190,8 +192,10 @@
       if (mine) updateOwnHp(c.current_hp, c.max_hp);
       const el = document.createElement('div');
       el.className = 'combatant' + (i === enc.turn_index ? ' turn' : '') + (c.is_down ? ' down' : '');
-      const conds = (c.conditions || [])
-        .map((cd) => cd.name === 'exhaustion' ? `${cd.name} ${cd.level}` : cd.name);
+      const conds = (c.conditions || []).map((cd) => {
+        const base = cd.name === 'exhaustion' ? `${cd.name} ${cd.level}` : cd.name;
+        return cd.remaining !== undefined ? `${base} (${cd.remaining})` : base;
+      });
       if (!c.can_act) conds.push('cannot act');
       el.innerHTML = `
         <div class="init">${c.initiative}</div>
