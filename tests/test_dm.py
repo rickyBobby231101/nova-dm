@@ -2,13 +2,11 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
-import anthropic
-import httpx
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from engine import character, dm, encounter, voice
+from engine import character, dm, encounter, llm, voice
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(character.SRD_DB_PATH),
@@ -32,17 +30,39 @@ def _make_character(name="Thorin"):
     )
 
 
-class _Block:
-    def __init__(self, type_, **kwargs):
-        self.type = type_
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+@pytest.fixture(autouse=True)
+def clean_llm_state(monkeypatch):
+    """Phase 8 put the model behind engine.llm, whose demotion set is global.
+    Keep turns in this file from inheriting each other's, and from reading
+    whatever keys happen to be in the developer's environment."""
+    llm.reset_availability()
+    for var in ("NOVA_DM_LLM_PROVIDER", "NOVA_DM_LLM_CHAIN", "NOVA_DM_LLM_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    yield
+    llm.reset_availability()
 
 
-class _Response:
-    def __init__(self, content, stop_reason):
-        self.content = content
-        self.stop_reason = stop_reason
+def _install_voice(monkeypatch, run):
+    """Seat a scripted voice in the DM's chair.
+
+    These go through the real llm.run_turn rather than patching it out, so what
+    is under test is the whole path dm relies on -- announce, execute, narrate,
+    and the error handling around it. `run` receives (execute, emit).
+    """
+    voice_cls = type("ScriptedVoice", (), {
+        "name": "test",
+        "__init__": lambda self, model=None: None,
+        "available": lambda self: True,
+        "run_turn": (
+            lambda self, system, user_message, tools, execute, emit: run(execute, emit)
+        ),
+    })
+    monkeypatch.setitem(llm.PROVIDERS, "test", voice_cls)
+    monkeypatch.setenv("NOVA_DM_LLM_CHAIN", "test")
+
+
+def _emitted(socketio, event="campaign_event"):
+    return [c.args[1]["text"] for c in socketio.emit.call_args_list if c.args[0] == event]
 
 
 def test_execute_tool_roll_check_logs_and_broadcasts():
@@ -87,40 +107,47 @@ def test_execute_tool_unknown_tool_returns_error():
     assert "error" in result
 
 
-def test_handle_player_action_runs_tool_loop_then_narrates():
+def test_handle_player_action_runs_tool_loop_then_narrates(monkeypatch):
     char = _make_character()
     socketio = MagicMock()
 
-    tool_use_block = _Block(
-        "tool_use", id="tu_1", name="roll_check",
-        input={"character_id": char["id"], "ability": "str", "proficient": True, "advantage": "none"},
-    )
-    first_response = _Response(content=[tool_use_block], stop_reason="tool_use")
-    second_response = _Response(
-        content=[_Block("text", text="You swing and the blow lands true.")],
-        stop_reason="end_turn",
-    )
+    def run(execute, emit):
+        execute("roll_check", {"character_id": char["id"], "ability": "str",
+                               "proficient": True, "advantage": "none"})
+        emit("You swing and the blow lands true.")
 
-    fake_client = MagicMock()
-    fake_client.messages.create.side_effect = [first_response, second_response]
-
-    with patch.object(dm, "_get_client", return_value=fake_client):
-        dm.handle_player_action(char["id"], "I attack the goblin", socketio)
-
-    assert fake_client.messages.create.call_count == 2
+    _install_voice(monkeypatch, run)
+    dm.handle_player_action(char["id"], "I attack the goblin", socketio)
 
     with character._campaign_con() as con:
         kinds = [r["kind"] for r in con.execute("SELECT kind FROM campaign_log ORDER BY id").fetchall()]
     assert kinds == ["action", "roll", "dm"]
 
-    emitted_texts = [call.args[1]["text"] for call in socketio.emit.call_args_list
-                     if call.args[0] == "campaign_event"]
+    emitted_texts = _emitted(socketio)
     assert any("I attack the goblin" in t for t in emitted_texts)
     assert any("swing" in t for t in emitted_texts)
 
     assert ("turn_complete", {"character_id": char["id"]}) == (
         socketio.emit.call_args_list[-1].args[0], socketio.emit.call_args_list[-1].args[1]
     )
+
+
+def test_narration_is_tagged_with_the_voice_that_spoke_it(monkeypatch):
+    """A gemma turn reads differently from a hosted one, so the feed labels who
+    is talking rather than presenting every voice as the same DM."""
+    char = _make_character()
+    socketio = MagicMock()
+
+    _install_voice(monkeypatch, lambda execute, emit: emit("The hall falls silent."))
+    dm.handle_player_action(char["id"], "I listen", socketio)
+
+    announced = [c.args[1]["provider"] for c in socketio.emit.call_args_list
+                 if c.args[0] == "dm_provider"]
+    assert announced == ["test"]
+
+    dm_events = [c.args[1] for c in socketio.emit.call_args_list
+                 if c.args[0] == "campaign_event" and c.args[1]["kind"] == "dm"]
+    assert dm_events[0]["provider"] == "test"
 
 
 def test_start_encounter_tool_builds_the_board_and_broadcasts():
@@ -260,87 +287,73 @@ def test_context_says_so_when_no_encounter_is_running():
     assert "No encounter is active" in dm._build_context(character.list_active_characters())
 
 
-def test_handle_player_action_speaks_the_narration():
+def test_handle_player_action_speaks_the_narration(monkeypatch):
     char = _make_character()
     socketio = MagicMock()
 
-    response = _Response(
-        content=[_Block("text", text="The torchlight gutters as you step through.")],
-        stop_reason="end_turn",
-    )
-    fake_client = MagicMock()
-    fake_client.messages.create.return_value = response
+    _install_voice(monkeypatch,
+                   lambda execute, emit: emit("The torchlight gutters as you step through."))
 
     spoken = []
-    with patch.object(dm, "_get_client", return_value=fake_client), \
-         patch.object(voice, "speak", side_effect=spoken.append):
+    with patch.object(voice, "speak", side_effect=spoken.append):
         dm.handle_player_action(char["id"], "I open the door", socketio)
 
     assert spoken == ["The torchlight gutters as you step through."]
 
 
-def test_turn_survives_a_broken_speaker():
+def test_turn_survives_a_broken_speaker(monkeypatch):
     """A dead sound card must not cost the player their turn -- the text still
     lands and the submit button is still released."""
     char = _make_character()
     socketio = MagicMock()
 
-    response = _Response(
-        content=[_Block("text", text="The torchlight gutters as you step through.")],
-        stop_reason="end_turn",
-    )
-    fake_client = MagicMock()
-    fake_client.messages.create.return_value = response
+    _install_voice(monkeypatch,
+                   lambda execute, emit: emit("The torchlight gutters as you step through."))
 
-    with patch.object(dm, "_get_client", return_value=fake_client), \
-         patch.object(voice, "speak", side_effect=RuntimeError("no audio device")):
+    with patch.object(voice, "speak", side_effect=RuntimeError("no audio device")):
         dm.handle_player_action(char["id"], "I open the door", socketio)
 
-    emitted_texts = [call.args[1]["text"] for call in socketio.emit.call_args_list
-                     if call.args[0] == "campaign_event"]
-    assert any("torchlight" in t for t in emitted_texts)
+    assert any("torchlight" in t for t in _emitted(socketio))
     assert socketio.emit.call_args_list[-1].args[0] == "turn_complete"
 
 
-def test_handle_player_action_gives_up_after_max_iterations():
+def test_handle_player_action_surfaces_an_overlong_turn(monkeypatch):
+    """The iteration cap itself lives in engine.llm and is tested there; what dm
+    owes the table is that the message arrives and the button comes back."""
     char = _make_character()
     socketio = MagicMock()
 
-    looping_block = _Block(
-        "tool_use", id="tu_x", name="roll_dice", input={"expr": "1d6"},
-    )
-    looping_response = _Response(content=[looping_block], stop_reason="tool_use")
+    def overrun(execute, emit):
+        raise llm.TurnExhausted("the DM pauses to gather their thoughts -- try again")
 
-    fake_client = MagicMock()
-    fake_client.messages.create.return_value = looping_response
+    _install_voice(monkeypatch, overrun)
+    dm.handle_player_action(char["id"], "I keep trying forever", socketio)
 
-    with patch.object(dm, "_get_client", return_value=fake_client):
-        dm.handle_player_action(char["id"], "I keep trying forever", socketio)
-
-    assert fake_client.messages.create.call_count == dm.MAX_TOOL_ITERATIONS
-    emitted_texts = [call.args[1]["text"] for call in socketio.emit.call_args_list
-                     if call.args[0] == "campaign_event"]
-    assert any("gather their thoughts" in t for t in emitted_texts)
+    assert any("gather their thoughts" in t for t in _emitted(socketio))
+    assert socketio.emit.call_args_list[-1].args[0] == "turn_complete"
 
 
-def test_handle_player_action_surfaces_api_error_instead_of_hanging():
+def test_handle_player_action_surfaces_a_dead_voice_instead_of_hanging(monkeypatch):
+    """Phase 8 changed the wording -- the table is told no voice is available
+    rather than that one vendor is unreachable -- but the underlying cause must
+    still reach the players, and the turn must still end."""
     char = _make_character()
     socketio = MagicMock()
 
-    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-    fake_client = MagicMock()
-    fake_client.messages.create.side_effect = anthropic.APIConnectionError(
-        message="credit balance is too low", request=req
-    )
+    def die(execute, emit):
+        raise llm.ProviderUnavailable("credit balance is too low")
 
-    with patch.object(dm, "_get_client", return_value=fake_client):
-        dm.handle_player_action(char["id"], "I attack the goblin", socketio)
+    _install_voice(monkeypatch, die)
+    dm.handle_player_action(char["id"], "I attack the goblin", socketio)
 
-    assert fake_client.messages.create.call_count == 1
-    emitted_texts = [call.args[1]["text"] for call in socketio.emit.call_args_list
-                     if call.args[0] == "campaign_event"]
+    emitted_texts = _emitted(socketio)
     assert any("credit balance is too low" in t for t in emitted_texts)
-    assert any("unreachable" in t for t in emitted_texts)
+    assert any("no DM voice is available" in t for t in emitted_texts)
+
+    # A plumbing failure is table chatter: never logged as narration, never spoken.
+    with character._campaign_con() as con:
+        kinds = [r["kind"] for r in con.execute("SELECT kind FROM campaign_log ORDER BY id").fetchall()]
+    assert "dm" not in kinds
 
     # even on the error path the player's button must be released
     assert socketio.emit.call_args_list[-1].args[0] == "turn_complete"

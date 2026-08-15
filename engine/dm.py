@@ -1,17 +1,14 @@
-"""Phase 3: the DM pipeline. Claude narrates and adjudicates, but per the same
+"""Phase 3: the DM pipeline. The model narrates and adjudicates, but per the same
 rule as dice.py -- it never invents a die roll, a check result, or an HP change
 itself. Every one of those goes through a tool call into engine.dice /
-engine.character, exactly like the live rolls in Phase 2, so the numbers stay real."""
+engine.character, exactly like the live rolls in Phase 2, so the numbers stay real.
+
+Phase 8 moved the choice of model behind engine.llm, so this file no longer knows
+or cares which voice is in the DM's chair. What it still owns is the part that
+matters: the tools, the board context, and the engine that actually rolls."""
 import json
 
-import anthropic
-
-from . import character, conditions, dice, encounter, voice
-
-MODEL = "claude-opus-5"
-# A combat round legitimately spends several calls (attack, damage, advance turn),
-# so the Phase 3 cap of 6 would bail out mid-fight.
-MAX_TOOL_ITERATIONS = 12
+from . import character, conditions, dice, encounter, llm, voice
 
 SYSTEM_PROMPT = """You are the Dungeon Master for a live D&D 5e (SRD) tabletop session, with this app as the shared table. Players describe what their characters do in free text; you narrate outcomes and run the game.
 
@@ -180,25 +177,6 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
 ]
-
-def _clean_error_message(e: anthropic.APIError) -> str:
-    body = getattr(e, "body", None)
-    if isinstance(body, dict):
-        error = body.get("error")
-        if isinstance(error, dict) and error.get("message"):
-            return error["message"]
-    return e.message
-
-
-_client = None
-
-
-def _get_client():
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic()
-    return _client
-
 
 def _build_context(characters_at_table: list) -> str:
     lines = ["Characters at the table:"]
@@ -375,57 +353,45 @@ def handle_player_action(character_id: int, action_text: str, socketio):
     socketio.emit("campaign_event", {"text": action_line, "kind": "action"}, room="campaign")
 
     context = _build_context(character.list_active_characters())
-    messages = [{"role": "user", "content": f"{context}\n\n{actor['name']} does: {action_text}"}]
+    prompt = f"{context}\n\n{actor['name']} does: {action_text}"
 
-    client = _get_client()
+    # Which voice answered is part of the table's state, not a debug detail --
+    # a Gemma turn reads differently from a Claude one and the DM screen says so.
+    speaking = {"provider": None}
+
+    def announce(name: str):
+        speaking["provider"] = name
+        socketio.emit("dm_provider", {"provider": name}, room="campaign")
+
+    def narrate(text: str):
+        character.log_campaign_event("dm", "DM", text)
+        socketio.emit(
+            "campaign_event",
+            {"text": text, "kind": "dm", "provider": speaking["provider"]},
+            room="campaign",
+        )
+        # Queued and spoken on a worker thread -- synthesis takes seconds,
+        # and nothing about the turn should wait on the speaker.
+        try:
+            voice.speak(text)
+        except Exception:
+            pass
+
     try:
-        for _ in range(MAX_TOOL_ITERATIONS):
-            try:
-                response = client.messages.create(
-                    model=MODEL,
-                    max_tokens=1024,
-                    system=SYSTEM_PROMPT,
-                    tools=TOOLS,
-                    messages=messages,
-                )
-            except anthropic.APIError as e:
-                socketio.emit(
-                    "campaign_event",
-                    {"text": f"(the DM is unreachable right now: {_clean_error_message(e)})", "kind": "dm"},
-                    room="campaign",
-                )
-                return
-
-            narration = "\n".join(b.text for b in response.content if b.type == "text").strip()
-            if narration:
-                character.log_campaign_event("dm", "DM", narration)
-                socketio.emit("campaign_event", {"text": narration, "kind": "dm"}, room="campaign")
-                # Queued and spoken on a worker thread -- synthesis takes seconds,
-                # and nothing about the turn should wait on the speaker.
-                try:
-                    voice.speak(narration)
-                except Exception:
-                    pass
-
-            if response.stop_reason != "tool_use":
-                break
-
-            messages.append({"role": "assistant", "content": response.content})
-            tool_results = []
-            for block in response.content:
-                if block.type != "tool_use":
-                    continue
-                result = _execute_tool(block.name, block.input, socketio)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(result),
-                })
-            messages.append({"role": "user", "content": tool_results})
-        else:
+        outcome = llm.run_turn(
+            SYSTEM_PROMPT,
+            prompt,
+            TOOLS,
+            lambda name, tool_input: _execute_tool(name, tool_input, socketio),
+            narrate,
+            on_provider=announce,
+        )
+        if outcome.error:
+            # Shown at the table but deliberately not logged as DM narration and
+            # not spoken -- the speaker is for the story, not for plumbing.
             socketio.emit(
                 "campaign_event",
-                {"text": "(the DM pauses to gather their thoughts -- try again)", "kind": "dm"},
+                {"text": f"({outcome.error})", "kind": "dm"},
                 room="campaign",
             )
     finally:

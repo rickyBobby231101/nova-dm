@@ -36,6 +36,10 @@
   #feed { max-height:220px; overflow-y:auto; font-size:13px; }
   #feed .entry { padding:6px 0; border-bottom:1px solid #2a2e3a; }
   #feed .entry:last-child { border-bottom:none; }
+  /* Which voice narrated. A gemma turn reads differently from a hosted one,
+     so the feed says which DM is talking rather than blurring them together. */
+  #feed .entry .voice { font-size:10px; color:#9098ac; letter-spacing:.05em;
+                        text-transform:uppercase; margin-right:6px; }
   .empty { color:#666; font-size:12px; }
   .combatant { display:flex; align-items:center; gap:8px; padding:6px 7px; border-radius:8px;
                border:1px solid transparent; font-size:13px; }
@@ -136,11 +140,18 @@
     document.getElementById('hp-text').textContent = `${current} / ${max} HP`;
   }
 
-  function addFeedEntry(text) {
+  function addFeedEntry(text, provider) {
     if (feed.querySelector('.empty')) feed.innerHTML = '';
     const el = document.createElement('div');
     el.className = 'entry';
-    el.textContent = text;
+    if (provider) {
+      const tag = document.createElement('span');
+      tag.className = 'voice';
+      tag.textContent = provider;
+      el.appendChild(tag);
+    }
+    // Appended as a text node, never innerHTML -- this string is model output.
+    el.appendChild(document.createTextNode(text));
     feed.prepend(el);
   }
 
@@ -168,7 +179,14 @@
   }
 
   socket.on('campaign_event', (data) => {
-    addFeedEntry(data.text);
+    addFeedEntry(data.text, data.provider);
+  });
+
+  // Sent as soon as a voice takes the chair, before any words arrive -- so the
+  // player waiting on the button learns who answered, and that one did at all.
+  socket.on('dm_provider', (data) => {
+    const btn = document.getElementById('action-submit');
+    if (btn.disabled) btn.textContent = data.provider.toUpperCase() + ' IS NARRATING...';
   });
 
   // The whole board arrives as one payload from whichever driver changed it --

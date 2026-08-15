@@ -36,6 +36,10 @@
   .hp-bar-fg.hurt { background:#c9a227; } .hp-bar-fg.bad { background:#a33; }
   #feed { max-height:260px; overflow-y:auto; font-size:12px; }
   #feed .entry { padding:5px 0; border-bottom:1px solid #2a2e3a; }
+  /* Which voice narrated -- the DM running the table needs to know whether the
+     hosted model answered or it fell through to the local one. */
+  #feed .entry .voice { font-size:10px; color:#9098ac; letter-spacing:.05em;
+                        text-transform:uppercase; margin-right:6px; }
   .empty { color:#666; font-size:12px; }
   .results { max-height:200px; overflow-y:auto; margin-top:8px; }
   .results .m { display:flex; justify-content:space-between; align-items:center; padding:4px 0;
@@ -121,15 +125,22 @@
   let picked = {};   // slug -> {name, count}
   let state = null;
 
-  function addFeedEntry(text) {
+  function addFeedEntry(text, provider) {
     if (feed.querySelector('.empty')) feed.innerHTML = '';
     const el = document.createElement('div');
     el.className = 'entry';
-    el.textContent = text;
+    if (provider) {
+      const tag = document.createElement('span');
+      tag.className = 'voice';
+      tag.textContent = provider;
+      el.appendChild(tag);
+    }
+    // Appended as a text node, never innerHTML -- this string is model output.
+    el.appendChild(document.createTextNode(text));
     feed.prepend(el);
   }
 
-  socket.on('campaign_event', (d) => addFeedEntry(d.text));
+  socket.on('campaign_event', (d) => addFeedEntry(d.text, d.provider));
   socket.on('roll_result', (d) => addFeedEntry(
     `${d.character} rolls ${d.ability.toUpperCase()}: ${d.d20}+${d.modifier}=${d.total}`));
 
