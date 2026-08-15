@@ -2,12 +2,13 @@
 no DM/LLM pipeline yet (that's Phase 3); the action box in player.html exists
 but isn't wired to anything. This phase proves the multiplayer plumbing works
 via a real live-sync round trip: roll a check, every connected device sees it."""
+import json
 import socket as _socket
 
 from flask import Flask, jsonify, make_response, redirect, render_template, request, url_for
 from flask_socketio import SocketIO, emit, join_room
 
-from engine import character, dice, dm, encounter, voice
+from engine import character, dice, dm, encounter, portable, voice
 
 app = Flask(__name__)
 app.secret_key = "nova-dm-lan-only"  # LAN-only, no real auth in scope -- see plan
@@ -59,9 +60,53 @@ def characters():
         )
         return redirect(url_for("play", character_id=char["id"]))
 
+    return _render_characters(player)
+
+
+def _render_characters(player, import_error: str = None, status: int = 200):
     chars = character.list_characters_for_player(player["id"])
-    return render_template("characters.html", player=player, characters=chars,
-                          classes=character.list_srd_classes(), races=character.list_srd_races())
+    html = render_template("characters.html", player=player, characters=chars,
+                           classes=character.list_srd_classes(),
+                           races=character.list_srd_races(), import_error=import_error)
+    return (html, status) if import_error else html
+
+
+@app.route("/character/<int:character_id>/export")
+def export_character(character_id):
+    player = _current_player()
+    if not player:
+        return redirect(url_for("join"))
+    char = character.get_character(character_id)
+    if not char or char["player_id"] != player["id"]:
+        return redirect(url_for("characters"))
+
+    payload = portable.export_character(character_id)
+    resp = make_response(json.dumps(payload, indent=2))
+    resp.headers["Content-Type"] = "application/json"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{portable.filename_for(char)}"'
+    return resp
+
+
+@app.route("/characters/import", methods=["POST"])
+def import_character():
+    player = _current_player()
+    if not player:
+        return redirect(url_for("join"))
+
+    upload = request.files.get("file")
+    blob = upload.read().decode("utf-8", "replace") if upload and upload.filename else ""
+    blob = blob or request.form.get("pasted", "")
+
+    try:
+        char = portable.import_character(portable.parse(blob), player["id"])
+    except portable.PortableError as e:
+        # A bad paste is a normal thing for a player to do -- say what's wrong on
+        # the page rather than handing them a 500.
+        return _render_characters(player, import_error=str(e), status=400)
+    except UnicodeDecodeError:
+        return _render_characters(player, import_error="That file isn't text.", status=400)
+
+    return redirect(url_for("play", character_id=char["id"]))
 
 
 @app.route("/play")

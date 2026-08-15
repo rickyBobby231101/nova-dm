@@ -21,6 +21,16 @@
   .abilities { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px 12px; }
   button { width:100%; padding:12px; border-radius:8px; border:none; background:#6a5cff;
            color:white; font-size:15px; font-weight:600; cursor:pointer; margin-top:6px; }
+  a.export { flex:0 0 auto; color:#9098ac; font-size:11px; letter-spacing:.05em; text-decoration:none;
+             border:1px solid #2a2e3a; border-radius:6px; padding:5px 9px; }
+  a.export:hover { color:#e8e8ec; border-color:#6a5cff; }
+  textarea { width:100%; box-sizing:border-box; min-height:90px; padding:9px; border-radius:6px;
+             border:1px solid #333848; background:#12141a; color:#e8e8ec; font-size:12px;
+             font-family:ui-monospace, monospace; margin-bottom:12px; resize:vertical; }
+  input[type=file] { padding:7px; font-size:12px; }
+  .error { background:#3a1f22; border:1px solid #a33; color:#ffb3b3; border-radius:8px;
+           padding:10px 12px; font-size:13px; margin-top:20px; }
+  .hint { color:#6a6f80; font-size:11px; margin:-6px 0 12px; }
 </style>
 </head>
 <body>
@@ -33,6 +43,7 @@
       <div class="char-name">{{ c.name }}</div>
       <div class="char-meta">{{ c.race|capitalize }} {{ c.class|capitalize }} · Level {{ c.level }} · {{ c.current_hp }}/{{ c.max_hp }} HP</div>
     </a>
+    <a class="export" href="/character/{{ c.id }}/export" title="Download this character as JSON">EXPORT</a>
   </div>
   {% else %}
   <div class="sub">No characters yet.</div>
@@ -65,6 +76,21 @@
       </div>
 
       <button type="submit">CREATE</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>IMPORT A CHARACTER</h2>
+    {% if import_error %}<div class="error" style="margin:0 0 14px">{{ import_error }}</div>{% endif %}
+    <form method="post" action="/characters/import" enctype="multipart/form-data">
+      <label>Character file</label>
+      <input type="file" name="file" accept=".json,application/json">
+      <div class="hint">A .nova-dm.json file exported from any nova-dm table.</div>
+
+      <label>…or paste it</label>
+      <textarea name="pasted" placeholder='{"format": "nova-dm.character", "version": 1, …}'></textarea>
+
+      <button type="submit">IMPORT</button>
     </form>
   </div>
 </body>

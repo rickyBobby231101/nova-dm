@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 
@@ -110,6 +111,84 @@ def test_roll_request_broadcasts_roll_result_and_logs_it():
         rows = con.execute("SELECT * FROM campaign_log WHERE kind='roll'").fetchall()
     assert len(rows) == 1
     assert "Mira" in rows[0]["content"]
+
+
+def _join_and_create(name="Chazel", char_name="Mira", race="dwarf"):
+    client = app_module.app.test_client()
+    client.post("/join", data={"name": name})
+    resp = client.post("/characters", data={
+        "name": char_name, "race": race, "class": "cleric",
+        "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
+    })
+    return client, int(resp.headers["Location"].rsplit("=", 1)[1])
+
+
+def test_export_route_offers_a_download():
+    client, char_id = _join_and_create()
+
+    resp = client.get(f"/character/{char_id}/export")
+
+    assert resp.status_code == 200
+    assert "attachment" in resp.headers["Content-Disposition"]
+    assert "mira.nova-dm.json" in resp.headers["Content-Disposition"]
+    payload = resp.get_json()
+    assert payload["format"] == "nova-dm.character"
+    assert payload["character"]["name"] == "Mira"
+
+
+def test_export_refuses_someone_elses_character():
+    _, char_id = _join_and_create(name="Chazel", char_name="Mira")
+    other = app_module.app.test_client()
+    other.post("/join", data={"name": "Someone Else"})
+
+    resp = other.get(f"/character/{char_id}/export")
+
+    assert resp.status_code == 302
+    assert "/characters" in resp.headers["Location"]
+
+
+def test_pasted_export_imports_and_lands_in_play():
+    client, char_id = _join_and_create(char_name="Mira", race="dwarf")
+    blob = client.get(f"/character/{char_id}/export").get_data(as_text=True)
+
+    importer = app_module.app.test_client()
+    importer.post("/join", data={"name": "Second Table"})
+    resp = importer.post("/characters/import", data={"pasted": blob})
+
+    assert resp.status_code == 302
+    new_id = int(resp.headers["Location"].rsplit("=", 1)[1])
+    assert new_id != char_id
+
+    original = app_module.character.get_character(char_id)
+    restored = app_module.character.get_character(new_id)
+    assert restored["con"] == original["con"], "racial bonus was re-applied on import"
+    assert restored["name"] == original["name"]
+
+
+def test_uploaded_file_imports():
+    client, char_id = _join_and_create(char_name="Mira")
+    blob = client.get(f"/character/{char_id}/export").get_data()
+
+    importer = app_module.app.test_client()
+    importer.post("/join", data={"name": "Third Table"})
+    resp = importer.post(
+        "/characters/import",
+        data={"file": (io.BytesIO(blob), "mira.nova-dm.json")},
+        content_type="multipart/form-data",
+    )
+
+    assert resp.status_code == 302
+    assert "/play" in resp.headers["Location"]
+
+
+def test_bad_paste_shows_a_message_instead_of_a_500():
+    client, _ = _join_and_create()
+
+    resp = client.post("/characters/import", data={"pasted": "{not json"})
+
+    assert resp.status_code == 400
+    assert b"isn&#39;t valid JSON" in resp.data or b"isn't valid JSON" in resp.data
+    assert b"IMPORT A CHARACTER" in resp.data, "should re-render the page, not a bare error"
 
 
 def test_dm_screen_renders():
