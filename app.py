@@ -232,6 +232,7 @@ def on_dm_condition(data):
         result = encounter.apply_condition(
             data.get("combatant_id"), data.get("condition"),
             data.get("level"), data.get("duration_rounds"),
+            data.get("until_turn_of"), data.get("until_boundary") or "end",
         )
     else:
         result = encounter.remove_condition(data.get("combatant_id"), data.get("condition"))

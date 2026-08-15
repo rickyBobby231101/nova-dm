@@ -49,17 +49,26 @@ def normalize(conditions) -> list:
     """Accept strings or objects, return objects. Unknown names are kept: a DM
     inventing 'cursed' should not lose it, it just has no mechanical effect.
 
-    `expires_round` is the last round on which the condition is still active. It
-    is absent for conditions that last until someone clears them, which is what
-    every condition written before this existed will be."""
+    A condition ends in one of three ways:
+      * nothing set -- it lasts until someone clears it. Everything written
+        before durations existed looks like this.
+      * `expires_round` -- the last round on which it is still active.
+      * `expires_position` -- a point in the initiative order, counted as
+        (round - 1) * combatants + turn_index. That is how "until the end of
+        Kael's next turn" is stored, since a turn boundary is just a position.
+        `until_label` carries the phrasing for display.
+    """
     out = []
     for entry in conditions or []:
         if isinstance(entry, str):
-            name, level, expires = entry.strip().lower(), None, None
+            name, level = entry.strip().lower(), None
+            expires = position = label = None
         elif isinstance(entry, dict):
             name = str(entry.get("name", "")).strip().lower()
             level = entry.get("level")
             expires = entry.get("expires_round")
+            position = entry.get("expires_position")
+            label = entry.get("until_label")
         else:
             continue
         if not name:
@@ -70,11 +79,14 @@ def normalize(conditions) -> list:
                 item["level"] = max(1, min(6, int(level)))
             except (TypeError, ValueError):
                 item["level"] = 1
-        try:
-            if expires is not None:
-                item["expires_round"] = int(expires)
-        except (TypeError, ValueError):
-            pass
+        for key, value in (("expires_round", expires), ("expires_position", position)):
+            try:
+                if value is not None:
+                    item[key] = int(value)
+            except (TypeError, ValueError):
+                pass
+        if label and item.get("expires_position") is not None:
+            item["until_label"] = str(label)
         out.append(item)
     return out
 
@@ -90,23 +102,32 @@ def exhaustion_level(conditions) -> int:
     return 0
 
 
-def add(conditions, name: str, level=None, duration_rounds=None, current_round: int = 1) -> list:
+def add(conditions, name: str, level=None, duration_rounds=None, current_round: int = 1,
+        expires_position=None, until_label=None) -> list:
     """Applying a condition twice is not an error -- it replaces, so exhaustion
     can be raised or lowered, or a duration refreshed, without removing it first.
 
     duration_rounds counts the round it is applied in: 1 round means it lasts
-    through the current round and is gone at the start of the next."""
+    through the current round and is gone at the start of the next.
+    expires_position is an initiative position, worked out by the caller (only
+    the encounter knows the turn order); it wins if both are given."""
     name = str(name).strip().lower()
     kept = [c for c in normalize(conditions) if c["name"] != name]
     entry = {"name": name}
     if name == "exhaustion":
         entry["level"] = level if level is not None else 1
-    try:
-        rounds = int(duration_rounds)
-    except (TypeError, ValueError):
-        rounds = 0
-    if rounds >= 1:
-        entry["expires_round"] = int(current_round) + rounds - 1
+
+    if expires_position is not None:
+        entry["expires_position"] = expires_position
+        if until_label:
+            entry["until_label"] = until_label
+    else:
+        try:
+            rounds = int(duration_rounds)
+        except (TypeError, ValueError):
+            rounds = 0
+        if rounds >= 1:
+            entry["expires_round"] = int(current_round) + rounds - 1
     return normalize(kept + [entry])
 
 
@@ -118,21 +139,31 @@ def remaining_rounds(condition, current_round: int):
     return max(0, expires - int(current_round) + 1)
 
 
-def expire(conditions, current_round: int) -> tuple:
-    """Split into what survives into `current_round` and what just ran out."""
+def expire(conditions, current_round: int, current_position: int = None) -> tuple:
+    """Split into what survives and what has just run out. Round durations end
+    when the round moves past them; turn durations end when the initiative order
+    reaches the position they were pinned to."""
     kept, done = [], []
     for c in normalize(conditions):
-        expires = c.get("expires_round")
-        (done if expires is not None and int(current_round) > expires else kept).append(c)
+        by_round = c.get("expires_round")
+        by_position = c.get("expires_position")
+        finished = (
+            (by_round is not None and int(current_round) > by_round)
+            or (by_position is not None and current_position is not None
+                and int(current_position) >= by_position)
+        )
+        (done if finished else kept).append(c)
     return kept, done
 
 
 def drop_timed(conditions) -> tuple:
-    """Rounds only exist inside an encounter, so a condition measured in them has
-    nothing left to count once the fight ends. Returns (kept, dropped)."""
+    """Rounds and turn positions only exist inside an encounter, so a condition
+    measured in either has nothing left to count once the fight ends. Returns
+    (kept, dropped)."""
     kept, dropped = [], []
     for c in normalize(conditions):
-        (dropped if c.get("expires_round") is not None else kept).append(c)
+        timed = c.get("expires_round") is not None or c.get("expires_position") is not None
+        (dropped if timed else kept).append(c)
     return kept, dropped
 
 
@@ -193,7 +224,9 @@ def describe(conditions, current_round: int = None) -> str:
     parts = []
     for c in normalize(conditions):
         label = f"{c['name']} {c['level']}" if c["name"] == "exhaustion" else c["name"]
-        if current_round is not None:
+        if c.get("until_label"):
+            label += f" ({c['until_label']})"
+        elif current_round is not None:
             left = remaining_rounds(c, current_round)
             if left is not None:
                 label += f" ({left} rd)" if left != 1 else " (1 rd)"

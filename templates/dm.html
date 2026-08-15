@@ -168,7 +168,13 @@
         <button class="mini" onclick="applyHp('dm_heal', ${c.id})">HEAL</button>
         <select class="cond-pick" id="cond-${c.id}" onchange="onConditionPick(${c.id})">${CONDITION_OPTIONS}</select>
         <input type="number" min="1" max="6" value="1" id="exh-${c.id}" style="display:none" title="Exhaustion level">
-        <input type="number" min="1" placeholder="rds" id="dur-${c.id}" class="dur" title="Rounds it lasts -- leave blank to last until cleared">
+        <select class="cond-pick" id="dkind-${c.id}" onchange="onDurationKind(${c.id})" title="How it ends">
+          <option value="">until cleared</option>
+          <option value="rounds">for rounds…</option>
+          <option value="end">end of their next turn</option>
+          <option value="start">start of their next turn</option>
+        </select>
+        <input type="number" min="1" value="1" id="dur-${c.id}" class="dur" style="display:none" title="Rounds it lasts">
         <button class="mini" onclick="addCondition(${c.id})">+COND</button>`;
       el.appendChild(controls);
 
@@ -180,7 +186,8 @@
           const chip = document.createElement('span');
           chip.className = 'chip' + (cd.name === 'exhaustion' ? ' warn' : '');
           const base = cd.name === 'exhaustion' ? `${cd.name} ${cd.level}` : cd.name;
-          chip.textContent = cd.remaining !== undefined ? `${base} · ${cd.remaining}` : base;
+          chip.textContent = cd.until_label ? `${base} · ${cd.until_label.replace('until ', '')}`
+                           : cd.remaining !== undefined ? `${base} · ${cd.remaining}` : base;
           chip.title = (CONDITION_TEXT[cd.name] || '') + '\n\n(click to clear)';
           chip.onclick = () => socket.emit('dm_condition',
             {apply: false, combatant_id: c.id, condition: cd.name});
@@ -210,15 +217,28 @@
       // Inline input rather than a prompt() -- a modal dialog blocks the page.
       payload.level = parseInt(document.getElementById('exh-' + id).value, 10) || 1;
     }
-    // Blank means it lasts until someone clears it.
-    const rounds = parseInt(document.getElementById('dur-' + id).value, 10);
-    if (rounds >= 1) payload.duration_rounds = rounds;
+    // How it ends: nothing, a number of rounds, or one of the combatant's own
+    // turn boundaries. The AI DM's tool can pin to any combatant's turn; this
+    // offers the self-referential case, which is how a table phrases it.
+    const kind = document.getElementById('dkind-' + id).value;
+    if (kind === 'rounds') {
+      const rounds = parseInt(document.getElementById('dur-' + id).value, 10);
+      if (rounds >= 1) payload.duration_rounds = rounds;
+    } else if (kind === 'end' || kind === 'start') {
+      payload.until_turn_of = id;
+      payload.until_boundary = kind;
+    }
     socket.emit('dm_condition', payload);
   }
 
   function onConditionPick(id) {
     document.getElementById('exh-' + id).style.display =
       document.getElementById('cond-' + id).value === 'exhaustion' ? '' : 'none';
+  }
+
+  function onDurationKind(id) {
+    document.getElementById('dur-' + id).style.display =
+      document.getElementById('dkind-' + id).value === 'rounds' ? '' : 'none';
   }
 
   // ── builder ───────────────────────────────────────────────────────────────

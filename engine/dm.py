@@ -144,6 +144,15 @@ TOOLS = [
                     "type": "integer",
                     "description": "How many rounds it lasts, counting the current one. The engine clears it automatically when it runs out. Omit for something that lasts until it is removed.",
                 },
+                "until_turn_of": {
+                    "type": "integer",
+                    "description": "Combatant id whose next turn ends this condition -- use for 'until the end of your next turn' and similar. Takes precedence over duration_rounds.",
+                },
+                "until_boundary": {
+                    "type": "string",
+                    "enum": ["start", "end"],
+                    "description": "Whether it ends at the start or the end of that turn. Defaults to end.",
+                },
             },
             "required": ["combatant_id", "condition"],
         },
@@ -323,6 +332,7 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
             result = encounter.apply_condition(
                 tool_input["combatant_id"], tool_input.get("condition"),
                 tool_input.get("level"), tool_input.get("duration_rounds"),
+                tool_input.get("until_turn_of"), tool_input.get("until_boundary") or "end",
             )
         else:
             result = encounter.remove_condition(

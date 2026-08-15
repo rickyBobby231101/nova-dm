@@ -363,6 +363,136 @@ def test_expiry_actually_restores_the_dice():
     assert encounter.monster_attack(goblin["id"], "Scimitar", pc["id"])["adv"] is None
 
 
+def _advance_to_turn_of(combatant_id):
+    """Advance to that combatant's NEXT turn. Always steps at least once -- if
+    it is already their turn, 'next' means a full lap away."""
+    encounter.advance_turn()
+    while encounter.get_state()["current"]["id"] != combatant_id:
+        encounter.advance_turn()
+    return encounter.get_state()
+
+
+def _fixed_order_encounter():
+    """Two PCs and a goblin, so turn boundaries land mid-round and the order is
+    long enough for 'next turn' to mean something."""
+    _make_character("Alpha")
+    _make_character("Beta")
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    return state
+
+
+def test_until_end_of_next_turn_ends_as_that_turn_finishes():
+    state = _fixed_order_encounter()
+    order = state["combatants"]
+    subject = order[1]           # not the one currently acting
+
+    encounter.apply_condition(subject["id"], "stunned", until_turn_of=subject["id"],
+                              until_boundary="end")
+    assert encounter.get_combatant(subject["id"])["conditions"][0]["until_label"] == \
+        f"until end of {subject['name']}'s turn"
+
+    # their turn is next: it must survive right through it
+    encounter.advance_turn()
+    assert encounter.get_state()["current"]["id"] == subject["id"]
+    assert encounter.get_combatant(subject["id"])["conditions"], "should last through their turn"
+
+    # and end the moment that turn does
+    encounter.advance_turn()
+    assert encounter.get_combatant(subject["id"])["conditions"] == []
+
+
+def test_until_start_of_next_turn_ends_one_turn_earlier():
+    state = _fixed_order_encounter()
+    subject = state["combatants"][1]
+
+    encounter.apply_condition(subject["id"], "stunned", until_turn_of=subject["id"],
+                              until_boundary="start")
+
+    encounter.advance_turn()      # arrives at their turn
+    assert encounter.get_state()["current"]["id"] == subject["id"]
+    assert encounter.get_combatant(subject["id"])["conditions"] == []
+
+
+def test_applied_on_your_own_turn_it_lasts_a_full_cycle():
+    """Per the SRD, 'until the end of your next turn' applied on your own turn
+    means the turn a full lap later, not the one happening right now."""
+    state = _fixed_order_encounter()
+    actor = state["current"]
+    n = len(state["combatants"])
+
+    encounter.apply_condition(actor["id"], "blinded", until_turn_of=actor["id"],
+                              until_boundary="end")
+
+    for _ in range(n):            # all the way back round to them
+        encounter.advance_turn()
+    assert encounter.get_state()["current"]["id"] == actor["id"]
+    assert encounter.get_combatant(actor["id"])["conditions"], "still their turn to come"
+
+    encounter.advance_turn()
+    assert encounter.get_combatant(actor["id"])["conditions"] == []
+
+
+def test_a_condition_can_be_pinned_to_someone_elses_turn():
+    """'until the end of the caster's next turn' on a different creature."""
+    state = _fixed_order_encounter()
+    victim, caster = state["combatants"][1], state["combatants"][2]
+
+    encounter.apply_condition(victim["id"], "restrained", until_turn_of=caster["id"],
+                              until_boundary="end")
+    assert caster["name"] in encounter.get_combatant(victim["id"])["conditions"][0]["until_label"]
+
+    _advance_to_turn_of(caster["id"])
+    assert encounter.get_combatant(victim["id"])["conditions"], "lasts through the caster's turn"
+
+    encounter.advance_turn()
+    assert encounter.get_combatant(victim["id"])["conditions"] == []
+
+
+def test_turn_expiry_is_announced_like_round_expiry():
+    state = _fixed_order_encounter()
+    subject = state["combatants"][1]
+    encounter.apply_condition(subject["id"], "stunned", until_turn_of=subject["id"],
+                              until_boundary="start")
+
+    result = encounter.advance_turn()
+
+    assert any("no longer stunned" in e["text"] for e in result["expired_conditions"])
+
+
+def test_pinning_to_an_unknown_combatant_is_refused():
+    state = _fixed_order_encounter()
+    subject = state["combatants"][0]
+
+    result = encounter.apply_condition(subject["id"], "prone", until_turn_of=999999)
+
+    assert "error" in result
+    assert encounter.get_combatant(subject["id"])["conditions"] == []
+
+
+def test_turn_pinned_conditions_are_cleared_when_the_fight_ends():
+    state = _fixed_order_encounter()
+    pc = _pcs(state)[0]
+    encounter.apply_condition(pc["id"], "stunned", until_turn_of=pc["id"])
+
+    encounter.end_encounter()
+
+    assert json.loads(character.get_character(pc["character_id"])["conditions_json"]) == []
+
+
+def test_turn_expiry_restores_the_dice():
+    state = _fixed_order_encounter()
+    goblin = _monsters(state)[0]
+    pc = _pcs(state)[0]
+    encounter.apply_condition(pc["id"], "prone", until_turn_of=pc["id"], until_boundary="start")
+
+    assert encounter.monster_attack(goblin["id"], "Scimitar", pc["id"])["adv"] == "advantage"
+
+    _advance_to_turn_of(pc["id"])
+    character.apply_heal(pc["character_id"], 999)
+
+    assert encounter.monster_attack(goblin["id"], "Scimitar", pc["id"])["adv"] is None
+
+
 def test_concurrent_changes_do_not_clobber_each_other():
     """Each socket event runs on its own thread, so two changes landing together
     used to lose one: applying two conditions in quick succession dropped the

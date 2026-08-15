@@ -113,6 +113,47 @@ def test_expiry_survives_normalizing_from_storage():
     assert cond.normalize(stored)[0]["expires_round"] == 5
 
 
+def test_a_turn_pinned_condition_expires_by_position():
+    active = cond.add([], "stunned", expires_position=7, until_label="until end of Kael's turn")
+
+    assert cond.expire(active, current_round=1, current_position=6)[1] == []
+    kept, done = cond.expire(active, current_round=1, current_position=7)
+    assert kept == [] and [c["name"] for c in done] == ["stunned"]
+
+
+def test_a_turn_pinned_condition_ignores_the_round_clock():
+    """Rounds keep turning; only reaching its position ends it."""
+    active = cond.add([], "stunned", expires_position=99, until_label="until end of X's turn")
+    assert cond.expire(active, current_round=50, current_position=3)[1] == []
+
+
+def test_position_wins_over_a_round_duration():
+    active = cond.add([], "prone", duration_rounds=5, current_round=1,
+                      expires_position=4, until_label="until end of X's turn")
+    assert "expires_round" not in active[0]
+    assert active[0]["expires_position"] == 4
+
+
+def test_turn_pinned_conditions_are_described_by_their_phrasing():
+    active = cond.add([], "stunned", expires_position=7, until_label="until end of Kael's turn")
+    assert cond.describe(active, current_round=1) == "stunned (until end of Kael's turn)"
+
+
+def test_a_label_without_a_position_is_dropped():
+    """The label is only meaningful alongside the position it describes."""
+    assert cond.normalize([{"name": "prone", "until_label": "until whenever"}]) == [{"name": "prone"}]
+
+
+def test_drop_timed_also_drops_turn_pinned_conditions():
+    active = cond.add([], "stunned", expires_position=4, until_label="until end of X's turn")
+    active = cond.add(active, "poisoned")
+
+    kept, dropped = cond.drop_timed(active)
+
+    assert [c["name"] for c in kept] == ["poisoned"]
+    assert [c["name"] for c in dropped] == ["stunned"]
+
+
 # ── the advantage rules ───────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("attacker,target,expected", [

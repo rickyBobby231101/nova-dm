@@ -257,6 +257,40 @@ def heal_combatant(combatant_id: int, amount: int) -> dict:
                 "current_hp": current, "max_hp": target["max_hp"], "text": text}
 
 
+def position_of(state: dict) -> int:
+    """Where the fight is, as one number that only ever goes up: turns elapsed
+    since the encounter began. Turn boundaries are positions in this line, which
+    is what makes 'until the end of Kael's next turn' storable."""
+    if not state or not state["combatants"]:
+        return 0
+    return (state["round"] - 1) * len(state["combatants"]) + state["turn_index"]
+
+
+def _turn_expiry(state: dict, combatant_id: int, boundary: str) -> tuple:
+    """The position at which a condition ending on someone's next turn runs out.
+
+    'start' clears as that turn begins; 'end' clears as the following turn does,
+    which is the same instant their turn ends. The turn is always the next one
+    strictly after now -- an effect applied on your own turn lasting 'until the
+    end of your next turn' means the one a full cycle later, per the SRD.
+    """
+    combatants = state["combatants"]
+    index = next((i for i, c in enumerate(combatants) if c["id"] == combatant_id), None)
+    if index is None:
+        return None, None
+
+    here = position_of(state)
+    n = len(combatants)
+    candidate = (state["round"] - 1) * n + index
+    if candidate <= here:
+        candidate += n
+
+    name = combatants[index]["name"]
+    if boundary == "start":
+        return candidate, f"until start of {name}'s turn"
+    return candidate + 1, f"until end of {name}'s turn"
+
+
 def _immunities(slug: str) -> set:
     """Open5e stores these as a comma-separated string ('charmed, frightened').
     1620 of the 3207 creatures have them, so they're worth honouring."""
@@ -280,7 +314,10 @@ def _write_conditions(target: dict, value: list):
                         (payload, target["id"]))
 
 
-def apply_condition(combatant_id: int, name: str, level=None, duration_rounds=None) -> dict:
+def apply_condition(combatant_id: int, name: str, level=None, duration_rounds=None,
+                    until_turn_of=None, until_boundary: str = "end") -> dict:
+    """until_turn_of is a combatant id: the condition ends on that combatant's
+    next turn, at its start or its end. It takes precedence over duration_rounds."""
     with _board_lock:
         target = get_combatant(combatant_id)
         if not target:
@@ -296,7 +333,15 @@ def apply_condition(combatant_id: int, name: str, level=None, duration_rounds=No
 
         state = get_state()
         current_round = state["round"] if state else 1
-        updated = cond.add(target["conditions"], name, level, duration_rounds, current_round)
+
+        expires_position = until_label = None
+        if until_turn_of is not None and state:
+            expires_position, until_label = _turn_expiry(state, until_turn_of, until_boundary)
+            if expires_position is None:
+                return {"error": "unknown combatant for the turn to end on"}
+
+        updated = cond.add(target["conditions"], name, level, duration_rounds, current_round,
+                           expires_position=expires_position, until_label=until_label)
         _write_conditions(target, updated)
 
         label = cond.describe([c for c in updated if c["name"] == name], current_round)
@@ -377,9 +422,9 @@ def monster_attack(combatant_id: int, action_name: str, target_id: int) -> dict:
         return result
 
 
-def expire_conditions(current_round: int) -> list:
-    """Drop conditions whose last round has passed. Returns what ended, so the
-    table is told rather than having effects quietly stop mattering."""
+def expire_conditions(current_round: int, current_position: int = None) -> list:
+    """Drop conditions that have run out, by round or by turn. Returns what ended,
+    so the table is told rather than having effects quietly stop mattering."""
     with _board_lock:
         state = get_state()
         if not state:
@@ -387,7 +432,7 @@ def expire_conditions(current_round: int) -> list:
 
         ended = []
         for combatant in state["combatants"]:
-            kept, done = cond.expire(combatant["conditions"], current_round)
+            kept, done = cond.expire(combatant["conditions"], current_round, current_position)
             if not done:
                 continue
             _write_conditions(combatant, kept)
@@ -413,8 +458,11 @@ def advance_turn() -> dict | None:
                 (next_index % len(state["combatants"]), round_, state["id"]),
             )
 
-        # Durations are measured in rounds, so they only come due when one turns over.
-        expired = expire_conditions(round_) if wrapped else []
+        # Swept every turn, not just on the wrap: turn-pinned durations come due
+        # mid-round. Round durations are unaffected until the round actually
+        # changes, so checking both here costs nothing.
+        new_state = get_state()
+        expired = expire_conditions(round_, position_of(new_state))
         new_state = get_state()
         if new_state is not None:
             new_state["expired_conditions"] = expired

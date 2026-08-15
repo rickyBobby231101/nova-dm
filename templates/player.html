@@ -124,7 +124,8 @@
     box.style.display = '';
     box.innerHTML = list.map((cd) => {
       const base = cd.name === 'exhaustion' ? `${cd.name} ${cd.level}` : cd.name;
-      const left = cd.remaining !== undefined ? ` · ${cd.remaining} rd` : '';
+      const left = cd.until_label ? ` · ${cd.until_label.replace('until ', '')}`
+                 : cd.remaining !== undefined ? ` · ${cd.remaining} rd` : '';
       return `<span class="chip">${base}${left}</span>`;
     }).join('');
   }
@@ -194,6 +195,7 @@
       el.className = 'combatant' + (i === enc.turn_index ? ' turn' : '') + (c.is_down ? ' down' : '');
       const conds = (c.conditions || []).map((cd) => {
         const base = cd.name === 'exhaustion' ? `${cd.name} ${cd.level}` : cd.name;
+        if (cd.until_label) return `${base} (${cd.until_label.replace('until ', '')})`;
         return cd.remaining !== undefined ? `${base} (${cd.remaining})` : base;
       });
       if (!c.can_act) conds.push('cannot act');
