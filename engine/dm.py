@@ -26,6 +26,11 @@ Combat:
 - Monsters attack via monster_attack, which rolls to-hit against the target's real AC and applies real damage. Never decide yourself whether a monster's attack hit.
 - Use advance_turn when a combatant's turn ends, and end_encounter when the fight is over.
 - damage_combatant and heal_combatant work on anyone in the encounter, monster or player; apply_damage and apply_heal remain for players outside of combat.
+
+Advancement:
+- Ending a fight pays out the XP for every monster the party actually put down, split among them. That is automatic -- never call award_xp for a fight, and never announce an XP total yourself.
+- Use award_xp for what combat does not cover: a quest completed, a rescue, a problem solved by talking. Say what it was for and let the engine report the number.
+- Leveling is the engine's job too. If it announces a level-up, weave it into the story; never tell a player they have levelled unless the engine says so.
 """
 
 TOOLS = [
@@ -68,6 +73,23 @@ TOOLS = [
             "type": "object",
             "properties": {"character_id": {"type": "integer"}, "amount": {"type": "integer"}},
             "required": ["character_id", "amount"],
+        },
+    },
+    {
+        "name": "award_xp",
+        "description": "Award experience points for a quest finished, a problem solved without a fight, or a milestone reached. Combat XP is paid out automatically when an encounter ends, so never use this for defeating monsters. Omit character_ids to award the whole party.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "amount": {"type": "integer", "description": "XP each named character receives."},
+                "character_ids": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Who earned it. Omit for the whole party.",
+                },
+                "reason": {"type": "string", "description": "Short phrase, e.g. 'freeing the miners'."},
+            },
+            "required": ["amount"],
         },
     },
     {
@@ -177,6 +199,53 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
 ]
+
+def _victory_reason(defeated: list) -> str:
+    names = [d["name"] for d in defeated]
+    if len(names) > 3:
+        return f"defeating {len(names)} foes"
+    return "defeating " + ", ".join(names) if names else "victory"
+
+
+def award_xp(character_ids: list, amount: int, socketio, reason: str = None) -> list:
+    """Award XP and tell the table, including any level-up it set off.
+
+    Shared by all three things that can grant it -- the AI DM's tool, the human
+    DM's screen, and the end of a won fight -- so a level-up reads the same
+    however it was earned, and no caller can award XP without announcing it.
+
+    The sheet_update that follows each award is what makes leveling visible
+    without a refresh: level, HP and proficiency all move at once, and the
+    player is looking at their own sheet when it happens.
+    """
+    results = []
+    for character_id in character_ids:
+        char = character.get_character(character_id)
+        if not char:
+            continue
+
+        result = character.award_xp(character_id, amount)
+        text = f"{char['name']} gains {amount} XP ({result['xp']} total)"
+        if reason:
+            text += f" -- {reason}"
+        character.log_campaign_event("xp", char["name"], text)
+        _emit(socketio, text, "xp")
+
+        for level_up in result["level_ups"]:
+            announcement = (
+                f"{char['name']} reaches level {level_up['level']}! "
+                f"+{level_up['hp_gain']} HP, proficiency +{level_up['proficiency_bonus']}"
+            )
+            character.log_campaign_event("level_up", char["name"], announcement)
+            _emit(socketio, announcement, "level")
+            socketio.emit("level_up", {"character_id": character_id, **level_up},
+                          room="campaign")
+
+        socketio.emit("sheet_update", {"character": character.get_character(character_id)},
+                      room="campaign")
+        results.append(result)
+    return results
+
 
 def _build_context(characters_at_table: list) -> str:
     lines = ["Characters at the table:"]
@@ -333,12 +402,32 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
         _broadcast_encounter(socketio)
         return state
 
+    if name == "award_xp":
+        # No character_ids means the whole party -- the common case by far, and
+        # asking a small local model to list every id correctly is a worse bet
+        # than defaulting.
+        ids = tool_input.get("character_ids") or [
+            c["id"] for c in character.list_active_characters()
+        ]
+        results = award_xp(ids, int(tool_input["amount"]), socketio,
+                           reason=tool_input.get("reason"))
+        return {"awarded": [{"character_id": r["character_id"], "xp": r["xp"],
+                             "level": r["new_level"]} for r in results]}
+
     if name == "end_encounter":
+        # Counted before the fight is closed out -- ending it clears the board
+        # this reads.
+        award = encounter.victory_xp()
         ended = encounter.end_encounter()
+        xp_each = 0
         if ended:
             _emit(socketio, "The encounter ends.", "encounter")
             _broadcast_encounter(socketio)
-        return {"ended": ended}
+            if award["per_character"]:
+                xp_each = award["per_character"]
+                award_xp(award["character_ids"], xp_each, socketio,
+                         reason=_victory_reason(award["defeated"]))
+        return {"ended": ended, "xp_each": xp_each}
 
     return {"error": f"unknown tool: {name}"}
 

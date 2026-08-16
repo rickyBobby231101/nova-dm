@@ -150,6 +150,64 @@ def test_narration_is_tagged_with_the_voice_that_spoke_it(monkeypatch):
     assert dm_events[0]["provider"] == "test"
 
 
+def test_award_xp_tool_defaults_to_the_whole_party():
+    a = _make_character("Thorin")
+    b = _make_character("Mira")
+    socketio = MagicMock()
+
+    result = dm._execute_tool("award_xp", {"amount": 50, "reason": "freeing the miners"}, socketio)
+
+    assert sorted(r["character_id"] for r in result["awarded"]) == sorted([a["id"], b["id"]])
+    assert character.get_character(a["id"])["xp"] == 50
+    assert character.get_character(b["id"])["xp"] == 50
+    # An award the table never hears about may as well not have happened.
+    assert any("gains 50 XP" in t and "freeing the miners" in t for t in _emitted(socketio))
+
+
+def test_award_xp_tool_can_name_who_earned_it():
+    a = _make_character("Thorin")
+    b = _make_character("Mira")
+    socketio = MagicMock()
+
+    dm._execute_tool("award_xp", {"amount": 50, "character_ids": [a["id"]]}, socketio)
+
+    assert character.get_character(a["id"])["xp"] == 50
+    assert character.get_character(b["id"])["xp"] == 0
+
+
+def test_crossing_a_threshold_levels_the_character_and_says_so():
+    char = _make_character()
+    socketio = MagicMock()
+
+    dm._execute_tool("award_xp", {"amount": 300}, socketio)
+
+    updated = character.get_character(char["id"])
+    assert updated["level"] == 2
+    assert updated["proficiency_bonus"] == 2
+    assert updated["max_hp"] > char["max_hp"]
+
+    assert any("reaches level 2" in t for t in _emitted(socketio))
+    # The sheet has to move on its own -- the player is looking at it.
+    events = [c.args[0] for c in socketio.emit.call_args_list]
+    assert "level_up" in events and "sheet_update" in events
+
+
+def test_ending_a_won_fight_pays_out_its_xp():
+    char = _make_character()
+    socketio = MagicMock()
+    state = dm._execute_tool(
+        "start_encounter", {"name": "fight", "monsters": [{"slug": "goblin", "count": 1}]}, socketio
+    )
+    goblin = next(c for c in state["combatants"] if c["kind"] == "monster")
+    encounter.damage_combatant(goblin["id"], goblin["max_hp"])
+
+    result = dm._execute_tool("end_encounter", {}, socketio)
+
+    assert result == {"ended": True, "xp_each": 50}
+    assert character.get_character(char["id"])["xp"] == 50
+    assert any("defeating Goblin" in t for t in _emitted(socketio))
+
+
 def test_start_encounter_tool_builds_the_board_and_broadcasts():
     _make_character()
     socketio = MagicMock()
@@ -192,7 +250,8 @@ def test_advance_turn_and_end_encounter_tools():
     state = dm._execute_tool("advance_turn", {}, socketio)
     assert state["turn_index"] == 1
 
-    assert dm._execute_tool("end_encounter", {}, socketio) == {"ended": True}
+    # The goblin is still standing, so ending the fight here pays out nothing.
+    assert dm._execute_tool("end_encounter", {}, socketio) == {"ended": True, "xp_each": 0}
     assert encounter.get_state() is None
 
 

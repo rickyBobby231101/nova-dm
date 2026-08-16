@@ -241,6 +241,49 @@ def test_dm_can_run_a_fight_over_sockets():
     assert ended["args"][0]["encounter"] is None
 
 
+def test_dm_can_award_xp_over_sockets_and_the_sheet_follows():
+    """The human DM's grant travels the same path as the AI DM's tool, and the
+    player's device is told to move its sheet without a refresh."""
+    player = app_module.app.test_client()
+    player.post("/join", data={"name": "Chazel"})
+    create = player.post("/characters", data={
+        "name": "Mira", "race": "human", "class": "cleric",
+        "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
+    })
+    char_id = int(create.headers["Location"].rsplit("=", 1)[1])
+
+    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    player_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client.get_received()
+    player_client.get_received()
+
+    dm_client.emit("dm_award_xp", {"amount": 300, "character_ids": [char_id],
+                                   "reason": "freeing the miners"})
+
+    char = app_module.character.get_character(char_id)
+    assert char["xp"] == 300
+    assert char["level"] == 2
+
+    received = player_client.get_received()
+    names = [r["name"] for r in received]
+    assert "level_up" in names
+    sheet = [r for r in received if r["name"] == "sheet_update"][-1]["args"][0]["character"]
+    assert sheet["id"] == char_id and sheet["level"] == 2
+
+    texts = [r["args"][0]["text"] for r in received if r["name"] == "campaign_event"]
+    assert any("freeing the miners" in t for t in texts)
+    assert any("reaches level 2" in t for t in texts)
+
+
+def test_dm_award_xp_ignores_an_empty_amount():
+    app_module.app.test_client().post("/join", data={"name": "Chazel"})
+    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client.get_received()
+
+    dm_client.emit("dm_award_xp", {"amount": 0})
+    assert not [r for r in dm_client.get_received() if r["name"] == "campaign_event"]
+
+
 def test_dm_can_apply_and_clear_a_condition_over_sockets():
     player = app_module.app.test_client()
     player.post("/join", data={"name": "Chazel"})

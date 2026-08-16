@@ -263,10 +263,26 @@ def on_dm_next_turn():
 
 @socketio.on("dm_end_encounter")
 def on_dm_end_encounter():
+    # Counted before the fight closes -- ending it clears the board this reads.
+    award = encounter.victory_xp()
     if encounter.end_encounter():
         socketio.emit("campaign_event", {"text": "The encounter ends.", "kind": "encounter"},
                       room=CAMPAIGN_ROOM)
+        if award["per_character"]:
+            dm.award_xp(award["character_ids"], award["per_character"], socketio,
+                        reason=dm._victory_reason(award["defeated"]))
     _broadcast_encounter()
+
+
+@socketio.on("dm_award_xp")
+def on_dm_award_xp(data):
+    """The human DM's manual grant. Goes through the same path as the AI DM's
+    tool, so a level-up earned this way is announced identically."""
+    amount = int(data.get("amount") or 0)
+    if not amount:
+        return
+    ids = data.get("character_ids") or [c["id"] for c in character.list_active_characters()]
+    dm.award_xp(ids, amount, socketio, reason=data.get("reason"))
 
 
 @socketio.on("set_voice")

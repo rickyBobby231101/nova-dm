@@ -671,6 +671,83 @@ def test_end_encounter_clears_the_board():
     assert encounter.end_encounter() is False
 
 
+def _drop(state, name_startswith):
+    """Put a monster down for real, through the damage path."""
+    target = next(c for c in _monsters(state) if c["name"].startswith(name_startswith))
+    encounter.damage_combatant(target["id"], target["max_hp"])
+
+
+def test_victory_xp_counts_only_the_monsters_actually_put_down():
+    _make_character()
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 2}])
+    _drop(state, "Goblin 1")
+
+    award = encounter.victory_xp()
+
+    # One goblin down (CR 1/4 = 50 XP), one still standing and worth nothing.
+    assert award["total"] == 50
+    assert [d["name"] for d in award["defeated"]] == ["Goblin 1"]
+
+
+def test_victory_xp_splits_evenly_among_the_party_at_that_fight():
+    a = _make_character("Thorin")
+    b = _make_character("Mira")
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 2}])
+    _drop(state, "Goblin 1")
+    _drop(state, "Goblin 2")
+
+    award = encounter.victory_xp()
+
+    assert award["total"] == 100
+    assert award["per_character"] == 50
+    assert sorted(award["character_ids"]) == sorted([a["id"], b["id"]])
+
+
+def test_victory_xp_floors_the_split_rather_than_inventing_a_rule():
+    _make_character("Thorin")
+    _make_character("Mira")
+    _make_character("Alden")
+    state = encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+    _drop(state, "Goblin")
+
+    award = encounter.victory_xp()
+
+    # 50 XP across three PCs: 16 each, the remainder left to the DM.
+    assert award["total"] == 50
+    assert award["per_character"] == 16
+
+
+def test_victory_xp_pays_nothing_for_a_fight_nobody_won():
+    _make_character()
+    encounter.start_encounter("fight", [{"slug": "goblin", "count": 1}])
+
+    award = encounter.victory_xp()
+    assert award == {"total": 0, "per_character": 0,
+                     "character_ids": [c["character_id"] for c in
+                                       _pcs(encounter.get_state())],
+                     "defeated": []}
+
+
+def test_victory_xp_is_empty_with_no_encounter_running():
+    _make_character()
+    assert encounter.victory_xp() == {"total": 0, "per_character": 0,
+                                      "character_ids": [], "defeated": []}
+
+
+def test_starting_a_new_fight_never_pays_out_the_old_one():
+    """start_encounter closes any fight still running. That path must not award
+    XP -- rolling into an ambush is not a victory."""
+    _make_character()
+    state = encounter.start_encounter("first", [{"slug": "goblin", "count": 1}])
+    _drop(state, "Goblin")
+
+    before = character.get_character(_pcs(state)[0]["character_id"])["xp"]
+    encounter.start_encounter("second", [{"slug": "orc", "count": 1}])
+    after = character.get_character(_pcs(state)[0]["character_id"])["xp"]
+
+    assert before == after == 0
+
+
 def test_monster_search_filters_by_name_and_cr():
     by_name = encounter.list_srd_monsters(query="goblin")
     assert any(m["slug"] == "goblin" for m in by_name)

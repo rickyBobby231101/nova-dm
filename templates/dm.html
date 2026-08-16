@@ -109,6 +109,19 @@
           <button onclick="startEncounter()" id="start-btn" disabled>START ENCOUNTER</button>
         </div>
       </div>
+
+      <div class="card">
+        <!-- Combat XP is paid out automatically when a fight ends. This is for
+             what combat doesn't cover: a quest done, a rescue, a deal struck. -->
+        <h2>Award XP</h2>
+        <div class="row">
+          <input id="xp-amount" type="number" min="1" placeholder="XP each" style="width:100px">
+          <input id="xp-reason" placeholder="What for? e.g. freeing the miners" style="flex:1">
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button onclick="awardXp()">AWARD TO CHECKED PARTY</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -308,6 +321,24 @@
     });
     picked = {};
     renderPicked();
+  }
+
+  function awardXp() {
+    const amountEl = document.getElementById('xp-amount');
+    const amount = parseInt(amountEl.value, 10);
+    if (!amount || amount < 1) return;
+    // Same checked list the encounter builder uses -- whoever is at the table is
+    // who earned it.
+    const party = Array.from(document.querySelectorAll('.party-check:checked'))
+                       .map((el) => parseInt(el.value, 10));
+    const reasonEl = document.getElementById('xp-reason');
+    socket.emit('dm_award_xp', {
+      amount: amount,
+      character_ids: party,
+      reason: reasonEl.value.trim() || null,
+    });
+    amountEl.value = '';
+    reasonEl.value = '';
   }
 
   searchMonsters();

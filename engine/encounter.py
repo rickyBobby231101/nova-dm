@@ -469,6 +469,42 @@ def advance_turn() -> dict | None:
         return new_state
 
 
+def victory_xp() -> dict:
+    """XP earned for the monsters actually put down in the running encounter.
+
+    Deliberately a separate call rather than part of end_encounter: that one is
+    also used by start_encounter to clear a fight still running, and rolling
+    straight into a new ambush must not pay out the old one. The caller asks for
+    this only when a fight is genuinely won.
+
+    Only defeated monsters count -- one that fled, was talked down, or is simply
+    still standing grants nothing, which is why this reads is_down rather than
+    the roster. The award is split evenly among the PCs who were at that fight,
+    floor division; 5e leaves the remainder to the DM's discretion and so does
+    this, rather than inventing a rule for the last few points.
+    """
+    empty = {"total": 0, "per_character": 0, "character_ids": [], "defeated": []}
+    with _board_lock:
+        state = get_state()
+        if not state:
+            return empty
+
+        total, defeated = 0, []
+        for combatant in state["combatants"]:
+            if combatant["kind"] != "monster" or not combatant["is_down"]:
+                continue
+            monster = get_srd_monster(combatant["monster_slug"]) or {}
+            xp = rules.xp_for_cr(monster.get("cr"))
+            total += xp
+            defeated.append({"name": combatant["name"], "xp": xp})
+
+        character_ids = [c["character_id"] for c in state["combatants"]
+                         if c["kind"] == "character"]
+        per_character = total // len(character_ids) if character_ids else 0
+        return {"total": total, "per_character": per_character,
+                "character_ids": character_ids, "defeated": defeated}
+
+
 def end_encounter() -> bool:
     with _board_lock:
         state = get_state()

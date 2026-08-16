@@ -64,7 +64,7 @@
       <h1>{{ character.name }}</h1>
       <span class="meta">{{ character.race|capitalize }} {{ character.class|capitalize }}</span>
     </div>
-    <div class="meta">Level {{ character.level }} · XP {{ character.xp }} · AC {{ character.ac }} · Speed {{ character.speed }}ft</div>
+    <div class="meta" id="sheet-meta">Level {{ character.level }} · XP {{ character.xp }} · AC {{ character.ac }} · Speed {{ character.speed }}ft</div>
     <div class="hp-bar-bg"><div class="hp-bar-fg" id="hp-bar" style="width:{{ (character.current_hp / character.max_hp * 100)|round|int }}%"></div></div>
     <div class="hp-text" id="hp-text">{{ character.current_hp }} / {{ character.max_hp }} HP{% if character.temp_hp %} (+{{ character.temp_hp }} temp){% endif %}</div>
     <div id="own-conditions" style="display:none"></div>
@@ -139,6 +139,25 @@
       Math.max(0, Math.round(current / max * 100)) + '%';
     document.getElementById('hp-text').textContent = `${current} / ${max} HP`;
   }
+
+  // XP and leveling are applied by the engine, so the sheet has to move on its
+  // own -- a player who had to refresh to see a level would not trust it.
+  socket.on('sheet_update', (data) => {
+    const c = data.character;
+    if (!c || c.id !== CHARACTER_ID) return;
+    document.getElementById('sheet-meta').textContent =
+      `Level ${c.level} · XP ${c.xp} · AC ${c.ac} · Speed ${c.speed}ft`;
+    updateOwnHp(c.current_hp, c.max_hp);
+  });
+
+  socket.on('level_up', (data) => {
+    if (data.character_id !== CHARACTER_ID) return;
+    // Brief flash on the line that just changed -- the feed carries the words,
+    // this just points at where it happened on your own sheet.
+    const meta = document.getElementById('sheet-meta');
+    meta.style.color = '#4caf7d';
+    setTimeout(() => { meta.style.color = ''; }, 2500);
+  });
 
   function addFeedEntry(text, provider) {
     if (feed.querySelector('.empty')) feed.innerHTML = '';
