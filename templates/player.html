@@ -103,8 +103,13 @@
   <div class="card">
     <h2 class="card-head">
       Campaign Feed
+      <button id="device-mute" class="mini" onclick="toggleDeviceMute()">THIS DEVICE: ON</button>
       <button id="voice-toggle" class="mini" onclick="toggleVoice()">DM VOICE: ON</button>
     </h2>
+    <!-- Phones refuse audio nobody asked for, and refuse it silently. This is
+         the gesture that unlocks it; it hides itself once audio works. -->
+    <button id="audio-unlock" class="mini" style="display:none; width:100%; margin-bottom:8px;"
+            onclick="NovaNarration.unlock()">TAP TO ENABLE THE DM'S VOICE</button>
     <div id="feed"><div class="empty">Rolls from everyone at the table will appear here live.</div></div>
   </div>
 
@@ -115,6 +120,7 @@
   </div>
 
 <script src="/static/vendor/socket.io.min.js"></script>
+<script src="/static/narration.js"></script>
 <script>
   const CHARACTER_ID = {{ character.id }};
   const socket = io();
@@ -248,12 +254,17 @@
     });
   });
 
-  // The DM's voice comes out of the server box, not this device, so the toggle is
-  // room-wide -- the server owns the state and every client follows voice_state.
+  // Two different mutes, on purpose. DM VOICE is room-wide and server-owned:
+  // silencing the DM is a table decision. THIS DEVICE is local to the browser,
+  // so someone taking a call doesn't cut the narration for everyone else.
   let voiceEnabled = true;
 
   function toggleVoice() {
     socket.emit('set_voice', {enabled: !voiceEnabled});
+  }
+
+  function toggleDeviceMute() {
+    NovaNarration.setMuted(!NovaNarration.isMuted());
   }
 
   socket.on('voice_state', (data) => {
@@ -266,6 +277,16 @@
       return;
     }
     btn.textContent = data.enabled ? 'DM VOICE: ON' : 'DM VOICE: OFF';
+  });
+
+  // A clip is ready. The server announces; this device decides when it plays.
+  socket.on('narration', (clip) => NovaNarration.enqueue(clip));
+
+  NovaNarration.onState((s) => {
+    const mute = document.getElementById('device-mute');
+    mute.classList.toggle('on', !s.muted);
+    mute.textContent = s.muted ? 'THIS DEVICE: OFF' : 'THIS DEVICE: ON';
+    document.getElementById('audio-unlock').style.display = s.blocked ? 'block' : 'none';
   });
 
   // Only re-enable for the player whose turn actually finished -- everyone in the

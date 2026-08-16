@@ -128,9 +128,18 @@
     </div>
   </div>
 
+<!-- The DM screen hears the narration too: whoever runs the game may be as
+     remote as the players, and shouldn't have to guess what was just said. -->
+<button id="audio-unlock" class="mini" style="display:none; width:100%; margin-bottom:8px;"
+        onclick="NovaNarration.unlock()">TAP TO ENABLE THE DM'S VOICE</button>
 <script src="/static/vendor/socket.io.min.js"></script>
+<script src="/static/narration.js"></script>
 <script>
   const socket = io();
+  socket.on('narration', (clip) => NovaNarration.enqueue(clip));
+  NovaNarration.onState((s) => {
+    document.getElementById('audio-unlock').style.display = s.blocked ? 'block' : 'none';
+  });
   const feed = document.getElementById('feed');
   // The 15 SRD conditions with their rules text, so a chip's tooltip can say what
   // the condition actually does instead of just naming it.

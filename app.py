@@ -5,7 +5,16 @@ via a real live-sync round trip: roll a check, every connected device sees it.""
 import json
 import socket as _socket
 
-from flask import Flask, jsonify, make_response, redirect, render_template, request, url_for
+from flask import (
+    Flask,
+    jsonify,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
 from flask_socketio import SocketIO, emit, join_room
 
 from engine import character, chronicle, conditions, dice, dm, encounter, portable, voice
@@ -15,6 +24,18 @@ app.secret_key = "nova-dm-lan-only"  # LAN-only, no real auth in scope -- see pl
 socketio = SocketIO(app, async_mode="threading")
 
 CAMPAIGN_ROOM = "campaign"  # one shared campaign for now -- multi-campaign is out of scope
+
+
+def _announce_narration(clip):
+    """Tell every connected device a clip is ready to play.
+
+    Called from engine.voice's worker thread, not a request context, which is why
+    it uses socketio.emit with an explicit room rather than flask_socketio.emit.
+    """
+    socketio.emit("narration", clip, room=CAMPAIGN_ROOM)
+
+
+voice.set_broadcast(_announce_narration)
 
 
 def _current_player():
@@ -131,6 +152,19 @@ def dm_screen():
                           scene=chronicle.get_scene())
 
 
+@app.route("/narration/<clip_id>.wav")
+def narration_clip(clip_id):
+    """Serve one synthesized clip to whichever devices were told about it.
+
+    voice.clip_path refuses anything that isn't one of its own hex names, so a
+    crafted id can't walk out of the clip directory.
+    """
+    path = voice.clip_path(clip_id)
+    if path is None:
+        return jsonify({"error": "not found"}), 404
+    return send_file(path, mimetype="audio/wav", conditional=True)
+
+
 @app.route("/api/encounter")
 def api_encounter():
     return jsonify({"encounter": encounter.get_state()})
@@ -149,7 +183,8 @@ def on_connect():
     join_room(CAMPAIGN_ROOM)
     # A device joining mid-session needs the current state of the shared speaker
     # and whatever fight is already underway.
-    emit("voice_state", {"enabled": voice.is_enabled(), "available": voice.available()})
+    emit("voice_state", {"enabled": voice.is_enabled(), "available": voice.available(),
+                         "sink": voice.sink()})
     emit("encounter_update", {"encounter": encounter.get_state()})
 
 
@@ -288,12 +323,13 @@ def on_dm_award_xp(data):
 
 @socketio.on("set_voice")
 def on_set_voice(data):
-    # The speaker is the server box, not the phone in your hand -- so the mute is
-    # room-wide, and every device's toggle has to follow it.
+    # Room-wide: this silences the DM for everyone, which is a table decision.
+    # Muting only your own device is separate and lives in the browser, so one
+    # player stepping away doesn't take the narration from everyone else.
     voice.set_enabled(bool(data.get("enabled")))
     socketio.emit(
         "voice_state",
-        {"enabled": voice.is_enabled(), "available": voice.available()},
+        {"enabled": voice.is_enabled(), "available": voice.available(), "sink": voice.sink()},
         room=CAMPAIGN_ROOM,
     )
 
