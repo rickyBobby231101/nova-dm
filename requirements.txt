@@ -4,3 +4,8 @@ requests
 pytest
 anthropic
 ruff
+
+# The DM's voice. Optional at runtime -- engine/voice.py falls back to Piper
+# (a plain binary, not a Python package) if these are missing or won't load.
+# The model weights are not pip-installable; see engine/voice.py KOKORO_DIR.
+kokoro-onnx

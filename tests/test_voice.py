@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +26,17 @@ def clip_dir(monkeypatch, tmp_path):
     behind and could prune a running session's clips."""
     monkeypatch.setattr(voice, "AUDIO_DIR", tmp_path / "clips")
     return tmp_path / "clips"
+
+
+@pytest.fixture(autouse=True)
+def no_real_kokoro(monkeypatch):
+    """Kokoro's weights are really on this machine, so without this the suite
+    would load 311MB of ONNX and synthesize for real. Point it at nothing;
+    the tests that exercise Kokoro install their own fake."""
+    monkeypatch.setattr(voice, "KOKORO_MODEL", Path("/nonexistent/kokoro.onnx"))
+    monkeypatch.setattr(voice, "KOKORO_VOICES", Path("/nonexistent/voices.bin"))
+    monkeypatch.setattr(voice, "_kokoro", None)
+    monkeypatch.setattr(voice, "_kokoro_failed", False)
 
 
 @pytest.fixture
@@ -69,27 +81,124 @@ def test_prepare_text_handles_empty_and_none():
     assert voice.prepare_text(None) == ""
 
 
-def test_piper_speak_synthesizes_then_plays(no_audio, piper_installed):
-    assert voice._piper_speak("The goblin lunges.") is True
+def test_synthesize_uses_piper_and_returns_the_clip(no_audio, piper_installed, clip_dir):
+    path = voice._synthesize("The goblin lunges.")
 
+    assert path is not None and path.exists() and path.parent == clip_dir
     assert no_audio[0][0] == "piper"
     assert str(piper_installed) in no_audio[0]
-    assert no_audio[1][0] == "aplay"
 
 
-def test_piper_speak_declines_when_model_missing(monkeypatch, no_audio, tmp_path):
+def test_synthesize_returns_none_when_no_engine_can_speak(monkeypatch, no_audio, tmp_path):
     monkeypatch.setattr(voice, "VOICES_DIR", tmp_path / "empty")
     (tmp_path / "empty").mkdir()
     monkeypatch.setattr(voice.shutil, "which", lambda name: f"/usr/bin/{name}")
 
-    assert voice._piper_speak("The goblin lunges.") is False
+    assert voice._synthesize("The goblin lunges.") is None
     assert no_audio == []
 
 
-def test_piper_speak_cleans_up_its_wav(no_audio, piper_installed, clip_dir):
-    """The server-speaker path keeps nothing: nobody is going to fetch it."""
-    voice._piper_speak("The goblin lunges.")
+def test_synthesize_leaves_no_wav_behind_when_it_fails(monkeypatch, piper_installed, clip_dir):
+    """A half-written clip that nobody can play must not sit in the directory
+    waiting to be served."""
+    def failing_run(cmd, **kwargs):
+        # piper exits non-zero *after* creating the file, which is the messy case
+        open(cmd[cmd.index("--output_file") + 1], "wb").write(b"partial")
+        return subprocess.CompletedProcess(cmd, 1, b"", b"boom")
+
+    monkeypatch.setattr(voice.subprocess, "run", failing_run)
+
+    assert voice._synthesize("The goblin lunges.") is None
     assert list(clip_dir.glob("*.wav")) == []
+
+
+# --------------------------------------------------------------------------
+# Kokoro: the default engine, with Piper behind it
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def kokoro_installed(monkeypatch, tmp_path):
+    """A stand-in Kokoro that writes a recognizable wav, so tests can tell which
+    engine spoke without loading 311MB of real weights."""
+    model_dir = tmp_path / "kokoro"
+    model_dir.mkdir()
+    (model_dir / "kokoro-v1.0.onnx").write_bytes(b"fake")
+    (model_dir / "voices-v1.0.bin").write_bytes(b"fake")
+    monkeypatch.setattr(voice, "KOKORO_MODEL", model_dir / "kokoro-v1.0.onnx")
+    monkeypatch.setattr(voice, "KOKORO_VOICES", model_dir / "voices-v1.0.bin")
+
+    calls = []
+
+    class FakeKokoro:
+        def create(self, text, voice=None, speed=None, lang=None):
+            calls.append({"text": text, "voice": voice, "speed": speed})
+            import numpy as np
+            return np.zeros(2205, dtype="float32"), 22050
+
+    monkeypatch.setattr(voice, "_kokoro", FakeKokoro())
+    return calls
+
+
+def test_kokoro_is_preferred_over_piper(no_audio, piper_installed, kokoro_installed, clip_dir):
+    """The whole point of adding Kokoro is that it speaks by default."""
+    path = voice._synthesize("The goblin lunges.")
+
+    assert path is not None and path.exists()
+    assert kokoro_installed[0]["text"] == "The goblin lunges."
+    assert kokoro_installed[0]["voice"] == voice.KOKORO_VOICE
+    assert no_audio == []  # piper was never reached
+
+
+def test_piper_takes_over_when_kokoro_fails(monkeypatch, no_audio, piper_installed,
+                                            kokoro_installed):
+    """Kokoro is the nicer voice, not a dependency -- a table with a broken
+    onnxruntime should still hear a DM."""
+    monkeypatch.setattr(voice, "_synthesize_kokoro", lambda text, out: False)
+
+    path = voice._synthesize("The goblin lunges.")
+
+    assert path is not None
+    assert no_audio[0][0] == "piper"
+
+
+def test_engine_override_puts_piper_first(monkeypatch, no_audio, piper_installed,
+                                          kokoro_installed):
+    monkeypatch.setattr(voice, "TTS_ENGINE", "piper")
+
+    voice._synthesize("The goblin lunges.")
+
+    assert no_audio[0][0] == "piper"
+    assert kokoro_installed == []
+
+
+def test_kokoro_load_failure_is_remembered_not_retried(monkeypatch, tmp_path):
+    """Re-importing a broken onnxruntime for every line would make each clip pay
+    the same doomed cost before falling through to Piper anyway."""
+    import builtins
+
+    model_dir = tmp_path / "kokoro"
+    model_dir.mkdir()
+    (model_dir / "kokoro-v1.0.onnx").write_bytes(b"fake")
+    (model_dir / "voices-v1.0.bin").write_bytes(b"fake")
+    monkeypatch.setattr(voice, "KOKORO_MODEL", model_dir / "kokoro-v1.0.onnx")
+    monkeypatch.setattr(voice, "KOKORO_VOICES", model_dir / "voices-v1.0.bin")
+    monkeypatch.setattr(voice, "_kokoro", None)
+    monkeypatch.setattr(voice, "_kokoro_failed", False)
+
+    attempts = []
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "kokoro_onnx":
+            attempts.append(name)
+            raise ImportError("no onnxruntime here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    assert voice._kokoro_model() is None
+    assert voice._kokoro_model() is None
+    assert len(attempts) == 1
 
 
 # --------------------------------------------------------------------------

@@ -16,8 +16,13 @@ The server speaker is kept as an option (NOVA_DM_VOICE_SINK=devices|server|both)
 because when everyone *is* in one room, six phones playing the same line a few
 hundred milliseconds apart is worse than one speaker was.
 
-Measured on this machine: ~6.7s to synthesize ~27s of speech, so synthesis is far
-too slow to sit inline in a turn -- speak() always returns immediately.
+Two synthesizers sit behind one seam (_synthesize). Kokoro is the default because
+Piper, at any of its voices, still reads synthetic and this is a DM speaking, not
+a status line. Piper stays as the fallback and is far faster, so the choice is a
+real trade rather than an upgrade: measured here, Piper runs ~0.25x real-time and
+Kokoro ~1.3-2.7x depending on voice. Synthesis has always run in the worker and
+never blocked a turn, which is the only reason the slower engine is affordable --
+speak() still returns immediately.
 """
 import os
 import queue
@@ -27,13 +32,26 @@ import subprocess
 import tempfile
 import threading
 import uuid
+import wave
 from pathlib import Path
 
 VOICES_DIR = Path(os.environ.get("NOVA_DM_VOICES_DIR", Path.home() / "cathedral" / "models" / "voices"))
-# lessac reads flat and synthetic -- fine for a status line, wrong for a DM
-# narrating a scene. amy has noticeably more warmth and phrasing at the same
-# Piper "medium" cost. Override with NOVA_DM_VOICE.
+# Piper's voice, used when Kokoro isn't available. lessac reads flat and
+# synthetic; amy has noticeably more warmth at the same "medium" cost.
 VOICE = os.environ.get("NOVA_DM_VOICE", "en_US-amy-medium")
+
+# Which synthesizer speaks. Kokoro sounds markedly more organic than Piper and
+# is what the DM uses by default; Piper stays as the fast fallback. Measured on
+# this box: Piper ~0.25x real-time, Kokoro ~1.3-2.7x depending on voice -- so
+# Kokoro takes longer to say a line than the line lasts. That is affordable only
+# because synthesis already runs in the worker and never blocks a turn.
+TTS_ENGINE = os.environ.get("NOVA_DM_TTS", "kokoro").strip().lower()
+
+KOKORO_DIR = Path(os.environ.get("NOVA_DM_KOKORO_DIR", Path.home() / "cathedral" / "models" / "kokoro"))
+KOKORO_MODEL = KOKORO_DIR / "kokoro-v1.0.onnx"
+KOKORO_VOICES = KOKORO_DIR / "voices-v1.0.bin"
+KOKORO_VOICE = os.environ.get("NOVA_DM_KOKORO_VOICE", "am_michael")
+KOKORO_SPEED = float(os.environ.get("NOVA_DM_KOKORO_SPEED", "1.0"))
 
 # Where synthesized clips live until they're pruned. Deliberately outside the
 # repo: these are ephemeral audio, not project files.
@@ -53,6 +71,9 @@ _worker = None
 _worker_lock = threading.Lock()
 _enabled = True
 _broadcast = None
+_kokoro = None
+_kokoro_lock = threading.Lock()
+_kokoro_failed = False
 
 
 def set_broadcast(fn):
@@ -123,33 +144,98 @@ def _prune():
             pass
 
 
-def _synthesize(text: str) -> Path | None:
-    """Render text to a wav in AUDIO_DIR. Returns None if Piper can't do it."""
+def kokoro_available() -> bool:
+    return KOKORO_MODEL.exists() and KOKORO_VOICES.exists()
+
+
+def _kokoro_model():
+    """Load the Kokoro model once and keep it.
+
+    Loading costs ~1.6s and 311MB of ONNX weights, which is fine once per
+    process and absurd once per line. A failure is remembered rather than
+    retried: if the weights are missing or onnxruntime won't import, every
+    later clip should fall straight through to Piper instead of paying the
+    import cost again for the same answer.
+    """
+    global _kokoro, _kokoro_failed
+    if _kokoro is not None or _kokoro_failed:
+        return _kokoro
+    with _kokoro_lock:
+        if _kokoro is None and not _kokoro_failed:
+            try:
+                from kokoro_onnx import Kokoro
+                _kokoro = Kokoro(str(KOKORO_MODEL), str(KOKORO_VOICES))
+            except Exception:
+                _kokoro_failed = True
+    return _kokoro
+
+
+def _write_wav(path: Path, samples, sample_rate: int):
+    """Kokoro hands back floats; browsers and aplay want 16-bit PCM."""
+    import numpy as np
+    with wave.open(str(path), "w") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(sample_rate)
+        out.writeframes((np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes())
+
+
+def _synthesize_kokoro(text: str, out: Path) -> bool:
+    if not kokoro_available():
+        return False
+    model = _kokoro_model()
+    if model is None:
+        return False
+    try:
+        samples, sample_rate = model.create(
+            text, voice=KOKORO_VOICE, speed=KOKORO_SPEED, lang="en-us"
+        )
+        _write_wav(out, samples, sample_rate)
+        return out.exists()
+    except Exception:
+        # Any synthesis failure is a fallback, not a crash -- Piper is right there.
+        return False
+
+
+def _synthesize_piper(text: str, out: Path) -> bool:
     if not shutil.which("piper"):
-        return None
+        return False
     model = voice_model()
     if not model:
-        return None
-
-    out = None
+        return False
     try:
-        AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-        out = AUDIO_DIR / f"{uuid.uuid4().hex}.wav"
         proc = subprocess.run(
             ["piper", "--model", str(model), "--output_file", str(out)],
             input=text.encode(),
             capture_output=True,
             timeout=SYNTH_TIMEOUT,
         )
-        if proc.returncode != 0 or not out.exists():
-            if out:
-                out.unlink(missing_ok=True)
-            return None
-        return out
+        return proc.returncode == 0 and out.exists()
     except (OSError, subprocess.SubprocessError):
-        if out:
-            out.unlink(missing_ok=True)
-        return None
+        return False
+
+
+def _synthesize(text: str) -> Path | None:
+    """Render text to a wav in AUDIO_DIR, or None if no engine could.
+
+    The engine choice lives behind this one seam so the queue, the broadcast,
+    the routes and the client never learn which synthesizer spoke.
+    """
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    out = AUDIO_DIR / f"{uuid.uuid4().hex}.wav"
+
+    engines = [_synthesize_kokoro, _synthesize_piper]
+    if TTS_ENGINE == "piper":
+        engines.reverse()
+
+    for engine in engines:
+        try:
+            if engine(text, out):
+                return out
+        except Exception:
+            pass
+        out.unlink(missing_ok=True)
+    return None
 
 
 def _play_local(path: Path) -> bool:
@@ -162,20 +248,6 @@ def _play_local(path: Path) -> bool:
         return True
     except (OSError, subprocess.SubprocessError):
         return False
-
-
-def _piper_speak(text: str) -> bool:
-    """Server-speaker path: synthesize, play here, keep nothing.
-
-    Still used when the sink is server-only, and by the espeak fallback decision.
-    """
-    path = _synthesize(text)
-    if path is None:
-        return False
-    try:
-        return _play_local(path)
-    finally:
-        path.unlink(missing_ok=True)
 
 
 def _espeak_speak(text: str) -> bool:
@@ -253,9 +325,10 @@ def speak(text: str):
 def available() -> bool:
     """Whether anything will actually be heard -- used by app.py to report status.
 
-    Piper is what can reach a browser; espeak only counts when this box's own
-    speaker is in play, because it cannot produce a clip to send.
+    Kokoro and Piper can both produce a clip a browser will fetch; espeak only
+    counts when this box's own speaker is in play, because it writes to the
+    sound card and has nothing to send.
     """
-    if shutil.which("piper") and voice_model():
+    if kokoro_available() or (shutil.which("piper") and voice_model()):
         return True
     return bool(_sink_includes("server") and shutil.which("espeak-ng"))
