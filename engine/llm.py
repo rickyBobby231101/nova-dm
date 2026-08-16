@@ -141,7 +141,12 @@ class AnthropicProvider(ToolLoopProvider):
 
     def _begin(self, system, user_message, tools):
         return {
-            "system": system,
+            # Block form so the prefix can carry a cache breakpoint. Tools render
+            # before system, so one marker here caches both -- roughly 2.4k tokens
+            # that would otherwise be re-sent on every iteration of the tool loop,
+            # and a combat round can spend a dozen of those.
+            "system": [{"type": "text", "text": system,
+                        "cache_control": {"type": "ephemeral"}}],
             "tools": [dict(t) for t in tools],
             "messages": [{"role": "user", "content": user_message}],
         }
@@ -152,13 +157,34 @@ class AnthropicProvider(ToolLoopProvider):
         try:
             response = self._client().messages.create(
                 model=self.model,
-                max_tokens=1024,
+                # This model thinks by default and max_tokens caps thinking and
+                # prose together, so 1024 truncated narration and sometimes cut a
+                # tool_use block in half. Thinking stays ON deliberately: with it
+                # off the model can write a tool call as ordinary text, which the
+                # loop below would never see -- and a DM that skips the call is a
+                # DM describing a roll the engine never made.
+                max_tokens=8192,
+                thinking={"type": "adaptive"},
+                output_config={"effort": "medium"},
                 system=state["system"],
                 tools=state["tools"],
                 messages=state["messages"],
             )
+        except anthropic.BadRequestError:
+            # Our own malformed request -- a bug, not a mute voice. Surfacing it
+            # keeps the chain from demoting this provider over something that
+            # would break every other one in exactly the same way.
+            raise
         except anthropic.APIError as e:
             raise ProviderUnavailable(_anthropic_error(e)) from e
+
+        # Both of these arrive as a perfectly successful response with empty or
+        # half-finished content. Left unchecked the turn reads as one where the
+        # DM simply said nothing, and the table is told it succeeded.
+        if response.stop_reason == "refusal":
+            raise ProviderUnavailable("Claude declined to narrate this turn")
+        if response.stop_reason == "max_tokens":
+            raise ProviderUnavailable("Claude's reply ran past its token budget")
 
         narration = "\n".join(b.text for b in response.content if b.type == "text").strip()
         calls = [
