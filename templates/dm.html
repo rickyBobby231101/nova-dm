@@ -58,6 +58,9 @@
 </head>
 <body>
   <h1>DM Screen <span class="sub" id="enc-name">no encounter</span></h1>
+  <!-- Where the AI DM thinks the party is. Its own note to itself, surfaced so
+       the human running the table can see what it will act on next turn. -->
+  <div class="sub" id="scene" style="margin:-8px 0 12px">{{ scene or 'No scene set yet.' }}</div>
 
   <div class="cols">
     <div>
@@ -154,6 +157,9 @@
   }
 
   socket.on('campaign_event', (d) => addFeedEntry(d.text, d.provider));
+  socket.on('scene_update', (d) => {
+    document.getElementById('scene').textContent = d.scene || 'No scene set yet.';
+  });
   socket.on('roll_result', (d) => addFeedEntry(
     `${d.character} rolls ${d.ability.toUpperCase()}: ${d.d20}+${d.modifier}=${d.total}`));
 

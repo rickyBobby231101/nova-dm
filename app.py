@@ -8,7 +8,7 @@ import socket as _socket
 from flask import Flask, jsonify, make_response, redirect, render_template, request, url_for
 from flask_socketio import SocketIO, emit, join_room
 
-from engine import character, conditions, dice, dm, encounter, portable, voice
+from engine import character, chronicle, conditions, dice, dm, encounter, portable, voice
 
 app = Flask(__name__)
 app.secret_key = "nova-dm-lan-only"  # LAN-only, no real auth in scope -- see plan
@@ -127,7 +127,8 @@ def dm_screen():
     # opens this page. No auth, deliberately: see the note on app.secret_key.
     return render_template("dm.html", encounter=encounter.get_state(),
                           characters=character.list_active_characters(),
-                          conditions=encounter.list_conditions())
+                          conditions=encounter.list_conditions(),
+                          scene=chronicle.get_scene())
 
 
 @app.route("/api/encounter")

@@ -150,6 +150,51 @@ def test_narration_is_tagged_with_the_voice_that_spoke_it(monkeypatch):
     assert dm_events[0]["provider"] == "test"
 
 
+def test_set_scene_tool_records_the_party_position_without_narrating_it():
+    _make_character()
+    socketio = MagicMock()
+
+    result = dm._execute_tool(
+        "set_scene",
+        {"location": "Goblin warren, east tunnel", "summary": "The party freed the miners."},
+        socketio,
+    )
+
+    assert result["scene"] == "Goblin warren, east tunnel"
+    assert "freed the miners" in result["chronicle"]
+    assert [c.args[0] for c in socketio.emit.call_args_list] == ["scene_update"]
+
+    # The DM's notebook is not narration -- the players hear about the place
+    # from the prose, not from a log line.
+    with character._campaign_con() as con:
+        kinds = [r["kind"] for r in con.execute("SELECT kind FROM campaign_log").fetchall()]
+    assert kinds == []
+
+
+def test_the_dm_is_told_what_it_wrote_down_last_turn():
+    """The whole point of Phase 10: the turn opens with the story, not just the
+    numbers."""
+    _make_character()
+    socketio = MagicMock()
+    dm._execute_tool("set_scene", {"location": "The old bridge",
+                                   "summary": "They struck a deal with the troll."}, socketio)
+    character.log_campaign_event("action", "Thorin", "Thorin: I test the ropes")
+
+    context = dm._build_context(character.list_active_characters())
+
+    assert "struck a deal with the troll" in context
+    assert "Where the party is now: The old bridge" in context
+    assert "I test the ropes" in context
+    # memory comes before the numbers
+    assert context.index("The old bridge") < context.index("Characters at the table:")
+
+
+def test_context_on_a_fresh_campaign_is_unchanged():
+    _make_character()
+    context = dm._build_context(character.list_active_characters())
+    assert context.startswith("Characters at the table:")
+
+
 def test_award_xp_tool_defaults_to_the_whole_party():
     a = _make_character("Thorin")
     b = _make_character("Mira")

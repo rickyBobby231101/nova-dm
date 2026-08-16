@@ -8,7 +8,7 @@ or cares which voice is in the DM's chair. What it still owns is the part that
 matters: the tools, the board context, and the engine that actually rolls."""
 import json
 
-from . import character, conditions, dice, encounter, llm, voice
+from . import character, chronicle, conditions, dice, encounter, llm, voice
 
 SYSTEM_PROMPT = """You are the Dungeon Master for a live D&D 5e (SRD) tabletop session, with this app as the shared table. Players describe what their characters do in free text; you narrate outcomes and run the game.
 
@@ -26,6 +26,11 @@ Combat:
 - Monsters attack via monster_attack, which rolls to-hit against the target's real AC and applies real damage. Never decide yourself whether a monster's attack hit.
 - Use advance_turn when a combatant's turn ends, and end_encounter when the fight is over.
 - damage_combatant and heal_combatant work on anyone in the encounter, monster or player; apply_damage and apply_heal remain for players outside of combat.
+
+Memory:
+- What you are told about the story so far, where the party is, and what just happened is your own record from earlier turns. Treat it as true and stay consistent with it -- do not re-describe a place differently or forget what the party already did.
+- Call set_scene when the party moves somewhere new or something happens that later turns must know about. Nothing else carries the story forward: recent events scroll out of view, and what you did not write down is gone.
+- Keep those summary lines short and factual. They are notes to yourself, not narration, and the players never see them.
 
 Advancement:
 - Ending a fight pays out the XP for every monster the party actually put down, split among them. That is automatic -- never call award_xp for a fight, and never announce an XP total yourself.
@@ -73,6 +78,18 @@ TOOLS = [
             "type": "object",
             "properties": {"character_id": {"type": "integer"}, "amount": {"type": "integer"}},
             "required": ["character_id", "amount"],
+        },
+    },
+    {
+        "name": "set_scene",
+        "description": "Record where the party is and, optionally, one line about what just changed in the story. Call this whenever the party moves somewhere new or something happens that later turns need to know about. This is your own memory: it is read back to you at the start of every turn, and it is the only thing that survives once recent events scroll out of view.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "Where the party is, e.g. 'Goblin warren, east tunnel'."},
+                "summary": {"type": "string", "description": "One line for the record, e.g. 'The party freed the captive miners and made an enemy of the Iron Ring.'"},
+            },
+            "required": ["location"],
         },
     },
     {
@@ -248,7 +265,10 @@ def award_xp(character_ids: list, amount: int, socketio, reason: str = None) -> 
 
 
 def _build_context(characters_at_table: list) -> str:
-    lines = ["Characters at the table:"]
+    # Memory first: the DM should read what has been happening before it reads
+    # the current numbers, the same way a person picks a game back up.
+    memory = chronicle.context_block()
+    lines = [memory, "\nCharacters at the table:"] if memory else ["Characters at the table:"]
     for c in characters_at_table:
         lines.append(
             f"- id={c['id']} {c['name']}, {c['race']} {c['class']}, level {c['level']}, "
@@ -401,6 +421,13 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
         _emit(socketio, f"Round {state['round']} -- {current['name']}'s turn.", "encounter")
         _broadcast_encounter(socketio)
         return state
+
+    if name == "set_scene":
+        result = chronicle.set_scene(tool_input.get("location"), tool_input.get("summary"))
+        # Not announced to the table: this is the DM's notebook, not narration.
+        # The players hear about the new place from the prose, not from a log line.
+        socketio.emit("scene_update", {"scene": result["scene"]}, room="campaign")
+        return result
 
     if name == "award_xp":
         # No character_ids means the whole party -- the common case by far, and

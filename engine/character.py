@@ -96,6 +96,14 @@ CREATE TABLE IF NOT EXISTS combatants (
     -- live on the character and outlast the fight, a monster's don't outlast it.
     conditions_json TEXT NOT NULL DEFAULT '[]'
 );
+-- Where the campaign is and what has happened, in the DM's own words. Keyed
+-- rather than columned because what a campaign needs to remember will grow and
+-- none of it is worth a migration -- see engine/chronicle.py.
+CREATE TABLE IF NOT EXISTS game_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
