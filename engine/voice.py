@@ -30,7 +30,10 @@ import uuid
 from pathlib import Path
 
 VOICES_DIR = Path(os.environ.get("NOVA_DM_VOICES_DIR", Path.home() / "cathedral" / "models" / "voices"))
-VOICE = os.environ.get("NOVA_DM_VOICE", "en_US-lessac-medium")
+# lessac reads flat and synthetic -- fine for a status line, wrong for a DM
+# narrating a scene. amy has noticeably more warmth and phrasing at the same
+# Piper "medium" cost. Override with NOVA_DM_VOICE.
+VOICE = os.environ.get("NOVA_DM_VOICE", "en_US-amy-medium")
 
 # Where synthesized clips live until they're pruned. Deliberately outside the
 # repo: these are ephemeral audio, not project files.
