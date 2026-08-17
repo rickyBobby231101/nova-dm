@@ -491,33 +491,37 @@ def test_set_voice_is_room_wide():
 # The startup warning about whatever else wants Ollama
 # ---------------------------------------------------------------------------
 
-def test_a_running_rival_is_called_out_with_the_command_to_stop_it(monkeypatch):
-    """The symptom is 'the DM got slow' and the cause is invisible from inside
-    the game, so the banner has to say it."""
-    monkeypatch.setattr(app_module, "OLLAMA_RIVAL_UNITS", ["nova-cathedral.service"])
-    monkeypatch.setattr(app_module.subprocess, "run",
-                        lambda *a, **k: type("R", (), {"stdout": "active\n"})())
+def test_a_stale_model_in_ollama_is_called_out(monkeypatch):
+    """A resident model that is not ours must be evicted before a turn can
+    start, and swapping 3.5GB out for 1.4GB is minutes. Better said up front
+    than discovered mid-game."""
+    monkeypatch.setattr(app_module.requests, "get",
+                        lambda *a, **k: type("R", (), {
+                            "json": lambda self: {"models": [{"name": "qwen3:4b"}]}})())
 
     warnings = app_module._ollama_rivals()
 
     assert len(warnings) == 1
-    assert "nova-cathedral.service" in warnings[0]
-    assert "systemctl --user stop nova-cathedral.service" in warnings[0]
-    assert "systemctl --user start nova-cathedral.service" in warnings[0], \
-        "tell them how to put it back, or they won't"
+    assert "qwen3:4b" in warnings[0] and "llama3.2:1b" in warnings[0]
+    assert "ollama stop qwen3:4b" in warnings[0]
 
 
-def test_nothing_is_said_when_the_rival_is_already_stopped(monkeypatch):
-    monkeypatch.setattr(app_module, "OLLAMA_RIVAL_UNITS", ["nova-cathedral.service"])
-    monkeypatch.setattr(app_module.subprocess, "run",
-                        lambda *a, **k: type("R", (), {"stdout": "inactive\n"})())
+def test_nothing_is_said_when_the_right_model_is_loaded(monkeypatch):
+    monkeypatch.setattr(app_module.requests, "get",
+                        lambda *a, **k: type("R", (), {
+                            "json": lambda self: {"models": [{"name": "llama3.2:1b"}]}})())
     assert app_module._ollama_rivals() == []
 
 
-def test_a_missing_systemctl_is_not_fatal(monkeypatch):
-    """Warning about a rival must never stop the game from starting."""
-    monkeypatch.setattr(app_module, "OLLAMA_RIVAL_UNITS", ["whatever.service"])
+def test_nothing_is_said_when_ollama_holds_nothing(monkeypatch):
+    monkeypatch.setattr(app_module.requests, "get",
+                        lambda *a, **k: type("R", (), {"json": lambda self: {"models": []}})())
+    assert app_module._ollama_rivals() == []
+
+
+def test_an_unreachable_ollama_is_not_fatal(monkeypatch):
+    """Checking for a stale model must never be why the game fails to start."""
     def boom(*a, **k):
-        raise OSError("no systemctl here")
-    monkeypatch.setattr(app_module.subprocess, "run", boom)
+        raise OSError("no ollama")
+    monkeypatch.setattr(app_module.requests, "get", boom)
     assert app_module._ollama_rivals() == []

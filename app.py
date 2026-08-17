@@ -9,6 +9,7 @@ import shutil
 import socket as _socket
 import subprocess
 
+import requests
 from flask import (
     Flask,
     jsonify,
@@ -22,7 +23,18 @@ from flask import (
 )
 from flask_socketio import SocketIO, emit, join_room
 
-from engine import auth, character, chronicle, conditions, dice, dm, encounter, portable, voice
+from engine import (
+    auth,
+    character,
+    chronicle,
+    conditions,
+    dice,
+    dm,
+    encounter,
+    llm,
+    portable,
+    voice,
+)
 
 app = Flask(__name__)
 # Persisted outside the repo and generated on first run. The old hardcoded key
@@ -30,6 +42,8 @@ app = Flask(__name__)
 # now that the session cookie is the only thing saying who the DM is.
 app.secret_key = auth.secret_key()
 socketio = SocketIO(app, async_mode="threading")
+
+OLLAMA_HOST = llm.OLLAMA_HOST
 
 CAMPAIGN_ROOM = "campaign"  # one shared campaign for now -- multi-campaign is out of scope
 
@@ -433,33 +447,37 @@ def _lan_ip():
         return None
 
 
-# Other things on this machine that want Ollama. Ollama holds one model at a
-# time here (OLLAMA_MAX_LOADED_MODELS=1), so a second app asking for a different
-# model evicts ours and both sides then reload constantly. Measured cost: a turn
-# that takes 95s alone took 543s alongside nova-cathedral, with 141 model loads
-# logged in twenty minutes. Worth a line at startup, because the symptom is
-# "the DM got slow" and the cause is invisible from inside the game.
-OLLAMA_RIVAL_UNITS = os.environ.get("NOVA_DM_OLLAMA_RIVALS", "nova-cathedral.service").split(",")
-
-
 def _ollama_rivals():
-    """Warn about user services that will fight us for Ollama's model slot."""
-    warnings = []
-    for unit in (u.strip() for u in OLLAMA_RIVAL_UNITS if u.strip()):
-        try:
-            active = subprocess.run(["systemctl", "--user", "is-active", unit],
-                                    capture_output=True, timeout=5,
-                                    text=True).stdout.strip() == "active"
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if active:
-            warnings.append(
-                f"\n  ! {unit} is running and shares Ollama with the DM.\n"
-                f"    Turns will be several times slower. Stop it while you play:\n"
-                f"        systemctl --user stop {unit}\n"
-                f"    and afterwards:  systemctl --user start {unit}"
-            )
-    return warnings
+    """Warn when Ollama is holding a model other than the DM's.
+
+    This box runs Ollama with OLLAMA_MAX_LOADED_MODELS=1, so a resident model
+    that is not ours has to be evicted and ours loaded before a turn can start
+    -- and evicting a 3.5GB model to load a 1.4GB one is minutes, not seconds.
+
+    Deliberately about *models* rather than about other applications. The first
+    version of this named nova-cathedral, on the theory that another app sharing
+    Ollama was the problem. That was wrong: Nova asks for the same llama3.2:1b
+    the DM does, requests to Ollama run in parallel, and Nova idles at 0.2% of a
+    core. Measured with it running, a turn was 83.5s; with it stopped, 93.4s.
+    The slow turn that started the theory had a stale qwen3 sitting in Ollama
+    from an experiment -- a resident wrong model, which is what this now checks.
+    """
+    try:
+        response = requests.get(f"{OLLAMA_HOST}/api/ps", timeout=3)
+        loaded = [m["name"] for m in response.json().get("models", [])]
+    except Exception:
+        return []
+
+    wanted = llm.PROVIDERS[llm.chain()[0]].default_model if llm.chain() else None
+    strangers = [m for m in loaded if m != wanted]
+    if not strangers or not wanted:
+        return []
+    return [
+        f"\n  ! Ollama is holding {', '.join(strangers)} but the DM wants {wanted}.\n"
+        f"    Only one model stays resident, so the first turn will pay to swap\n"
+        f"    them over. To do it now instead of mid-game:\n"
+        f"        ollama stop {strangers[0]}"
+    ]
 
 
 def _tailscale_address():
