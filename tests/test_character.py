@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from engine import character
+from engine import character, rules
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(character.SRD_DB_PATH),
@@ -71,3 +71,168 @@ def test_damage_and_heal_clamp_correctly():
 
     heal = character.apply_heal(char["id"], 9999)
     assert heal["current_hp"] == max_hp  # clamped to max, not overhealed
+
+
+# ---------------------------------------------------------------------------
+# Ability score improvements
+# ---------------------------------------------------------------------------
+
+def _leveller(dex=12, con=13):
+    player = character.create_player("Chazel")
+    return character.create_character(
+        player_id=player["id"], name="Ferrick", race="human", class_="fighter",
+        ability_scores={"str": 15, "dex": dex, "con": con, "int": 10, "wis": 10, "cha": 10},
+    )
+
+
+def test_no_improvement_before_level_four():
+    char = _leveller()
+    for level in (2, 3):
+        character.apply_level_up(char["id"], level)
+    assert character.get_character(char["id"])["pending_asi"] == 0
+
+
+def test_level_four_grants_two_points():
+    char = _leveller()
+    for level in (2, 3, 4):
+        result = character.apply_level_up(char["id"], level)
+    assert result["asi_points"] == 2
+    assert character.get_character(char["id"])["pending_asi"] == 2
+
+
+def test_a_jump_past_an_improvement_still_grants_it():
+    """Enough XP at once carries a character up two levels. An improvement
+    stepped over is one nobody ever gets."""
+    char = _leveller()
+    result = character.apply_level_up(char["id"], 5)  # 1 -> 5, crossing 4
+    assert result["asi_points"] == 2
+
+
+def test_a_jump_across_two_improvements_grants_both():
+    char = _leveller()
+    result = character.apply_level_up(char["id"], 9)  # crosses 4 and 8
+    assert result["asi_points"] == 4
+
+
+def test_spending_raises_the_score_and_the_points_go_down():
+    char = _leveller()
+    character.apply_level_up(char["id"], 4)
+    before = character.get_character(char["id"])["str"]
+
+    result = character.raise_ability(char["id"], "str", 2)
+
+    assert result["to"] == before + 2
+    assert character.get_character(char["id"])["pending_asi"] == 0
+
+
+def test_points_can_be_split_across_two_abilities():
+    """5e allows +1/+1, so the count is points rather than improvements."""
+    char = _leveller()
+    character.apply_level_up(char["id"], 4)
+    wis_before = character.get_character(char["id"])["wis"]
+
+    character.raise_ability(char["id"], "str", 1)
+    assert character.get_character(char["id"])["pending_asi"] == 1
+    character.raise_ability(char["id"], "wis", 1)
+
+    after = character.get_character(char["id"])
+    assert after["pending_asi"] == 0
+    assert after["wis"] == wis_before + 1
+
+
+def test_raising_constitution_pays_hit_points_for_every_level_already_taken():
+    """5e applies the new modifier retroactively, not just going forward."""
+    # Racial bonuses land before this runs, so pick the score off the sheet and
+    # find one that actually crosses a modifier boundary.
+    char = _leveller(con=13)
+    character.apply_level_up(char["id"], 4)
+    sheet = character.get_character(char["id"])
+    if sheet["con"] % 2 == 0:  # even scores are the ones that cross on +1
+        character.raise_ability(char["id"], "con", 1)
+        sheet = character.get_character(char["id"])
+    before_hp, before_mod = sheet["max_hp"], rules.ability_mod(sheet["con"])
+
+    result = character.raise_ability(char["id"], "con", 1)
+
+    after = character.get_character(char["id"])
+    crossed = rules.ability_mod(after["con"]) - before_mod
+    assert result["hp_gain"] == crossed * 4, "one modifier point at each of four levels"
+    assert after["max_hp"] == before_hp + result["hp_gain"]
+
+
+def test_raising_constitution_without_crossing_a_modifier_pays_nothing():
+    """Odd scores gain nothing until the next point pairs with them."""
+    char = _leveller(con=13)
+    character.apply_level_up(char["id"], 4)
+    sheet = character.get_character(char["id"])
+    if sheet["con"] % 2:  # make it even, so the next point does not cross
+        character.raise_ability(char["id"], "con", 1)
+
+    assert character.raise_ability(char["id"], "con", 1)["hp_gain"] == 0
+
+
+def test_raising_dexterity_moves_armour_class():
+    char = _leveller(dex=13)
+    character.apply_level_up(char["id"], 4)
+    sheet = character.get_character(char["id"])
+    if sheet["dex"] % 2 == 0:  # make it odd, so the next point crosses a modifier
+        character.raise_ability(char["id"], "dex", 1)
+        sheet = character.get_character(char["id"])
+
+    result = character.raise_ability(char["id"], "dex", 1)
+
+    assert result["ac"] == rules.unarmored_ac(character.get_character(char["id"])["dex"])
+    assert result["ac"] == sheet["ac"] + 1
+
+
+def test_armour_class_reflects_dexterity_from_the_start():
+    """It was a flat 10, which left a nimble character no harder to hit."""
+    char = _leveller(dex=16)
+    assert char["ac"] == rules.unarmored_ac(char["dex"])
+    assert char["ac"] > 10
+
+
+def test_a_score_stops_at_twenty():
+    char = _leveller()
+    character.apply_level_up(char["id"], 9)  # 4 points
+    with character._campaign_con() as con:
+        con.execute("UPDATE characters SET str=19 WHERE id=?", (char["id"],))
+
+    result = character.raise_ability(char["id"], "str", 2)
+
+    assert result["to"] == 20
+    assert result["granted"] == 1, "only the point that fit was spent"
+    assert character.get_character(char["id"])["pending_asi"] == 3
+
+
+def test_spending_what_you_do_not_have_is_refused():
+    char = _leveller()
+    with pytest.raises(ValueError, match="point"):
+        character.raise_ability(char["id"], "str", 1)
+
+
+def test_a_maxed_score_is_refused_rather_than_silently_wasting_the_point():
+    char = _leveller()
+    character.apply_level_up(char["id"], 4)
+    with character._campaign_con() as con:
+        con.execute("UPDATE characters SET str=20 WHERE id=?", (char["id"],))
+
+    with pytest.raises(ValueError, match="already at 20"):
+        character.raise_ability(char["id"], "str", 1)
+    assert character.get_character(char["id"])["pending_asi"] == 2
+
+
+def test_an_unknown_ability_is_refused():
+    char = _leveller()
+    character.apply_level_up(char["id"], 4)
+    with pytest.raises(ValueError, match="not an ability"):
+        character.raise_ability(char["id"], "luck", 1)
+
+
+def test_an_unspent_improvement_survives_until_it_is_used():
+    """A player who levels up mid-session and logs off must find it waiting."""
+    char = _leveller()
+    character.apply_level_up(char["id"], 4)
+    assert character.get_character(char["id"])["pending_asi"] == 2
+    character.apply_level_up(char["id"], 5)
+    assert character.get_character(char["id"])["pending_asi"] == 2, "not lost, not doubled"

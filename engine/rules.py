@@ -17,6 +17,33 @@ CR_XP = {
 }
 
 
+# 5e grants an Ability Score Improvement at these levels (plus class-specific
+# extras this table deliberately does not model -- rogues at 10, fighters at 6
+# and 14 -- because the SRD class data does not expose them cleanly and a
+# missing improvement is easier to hand out later than a wrong one is to undo).
+ASI_LEVELS = (4, 8, 12, 16, 19)
+
+# Nobody exceeds 20 without magic, and there is no magic here yet.
+ABILITY_CAP = 20
+
+# Points granted per improvement, spendable across abilities.
+ASI_POINTS = 2
+
+
+def asi_levels_crossed(from_level: int, to_level: int) -> list:
+    """Which improvements a jump from one level to another passes through.
+
+    A jump, not a step: enough XP at once can carry a character up two levels,
+    and an improvement skipped over is one nobody ever gets.
+    """
+    return [lvl for lvl in ASI_LEVELS if from_level < lvl <= to_level]
+
+
+def unarmored_ac(dex: int) -> int:
+    """10 + DEX modifier. Armour is not modelled yet, so this is everyone's AC."""
+    return 10 + ability_mod(dex)
+
+
 def ability_label(ability: str) -> str:
     """What a player should see for an ability key.
 

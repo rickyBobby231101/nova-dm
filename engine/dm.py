@@ -150,6 +150,19 @@ TOOLS = [
         },
     },
     {
+        "name": "raise_ability",
+        "description": "Spend an earned ability score improvement. Only call this when the engine has told you a character has improvement points pending -- they are earned at levels 4, 8, 12, 16 and 19, and the character chooses where they go.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "character_id": {"type": "integer"},
+                "ability": {"type": "string", "enum": ["str", "dex", "con", "int_", "wis", "cha"]},
+                "amount": {"type": "integer", "description": "Points to add, 1 or 2."},
+            },
+            "required": ["character_id", "ability", "amount"],
+        },
+    },
+    {
         "name": "award_xp",
         "description": "Award experience points for a quest finished, a problem solved without a fight, or a milestone reached. Combat XP is paid out automatically when an encounter ends, so never use this for defeating monsters. Omit character_ids to award the whole party.",
         "input_schema": {
@@ -309,6 +322,10 @@ def award_xp(character_ids: list, amount: int, socketio, reason: str = None) -> 
             announcement = (
                 f"{char['name']} reaches level {level_up['level']}! "
                 f"+{level_up['hp_gain']} HP, proficiency +{level_up['proficiency_bonus']}"
+                # Said out loud, because an improvement nobody is told about is
+                # one nobody spends.
+                + (f" -- and {level_up['asi_points']} ability score points to spend"
+                   if level_up.get("asi_points") else "")
             )
             character.log_campaign_event("level_up", char["name"], announcement)
             _emit(socketio, announcement, "level")
@@ -484,6 +501,19 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
         # Not announced to the table: this is the DM's notebook, not narration.
         # The players hear about the new place from the prose, not from a log line.
         socketio.emit("scene_update", {"scene": result["scene"]}, room="campaign")
+        return result
+
+    if name == "raise_ability":
+        result = character.raise_ability(
+            tool_input["character_id"], tool_input["ability"], tool_input.get("amount", 1))
+        text = (f"{result['name']}'s {result['ability']} rises to {result['to']}"
+                + (f" (+{result['hp_gain']} HP)" if result["hp_gain"] else "")
+                + (f" -- {result['pending_asi']} point(s) still to spend"
+                   if result["pending_asi"] else ""))
+        character.log_campaign_event("level_up", result["name"], text)
+        socketio.emit("campaign_event", {"text": text, "kind": "level_up"}, room="campaign")
+        socketio.emit("sheet_update", {"character": character.get_character(
+            tool_input["character_id"])}, room="campaign")
         return result
 
     if name == "award_xp":

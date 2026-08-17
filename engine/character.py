@@ -123,9 +123,29 @@ def _connect(path):
     return con
 
 
+# Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS silently
+# does nothing to a table that already exists, so a new column needs an ALTER --
+# and it has to be safe to run on every connect, like the schema above it.
+ADDED_COLUMNS = {
+    # Improvements earned but not yet spent. On the character rather than in
+    # game_state because it belongs to one character, and because an unspent
+    # improvement has to survive until its player is next at the table.
+    "characters": [("pending_asi", "INTEGER NOT NULL DEFAULT 0")],
+}
+
+
+def _migrate(con):
+    for table, columns in ADDED_COLUMNS.items():
+        existing = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+        for name, spec in columns:
+            if name not in existing:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {spec}")
+
+
 def _campaign_con():
     con = _connect(CAMPAIGN_DB_PATH)
     con.executescript(CAMPAIGN_SCHEMA)
+    _migrate(con)
     return con
 
 
@@ -163,15 +183,21 @@ def create_character(player_id, name: str, race: str, class_: str, ability_score
     max_hp = hit_die + con_mod  # level 1: max hit die roll, not average
     speed = race_data.get("speed", 30)
 
+    # AC was a flat 10 here, which left a DEX 17 rogue no harder to hit than a
+    # sack of flour. Armour still isn't modelled, so unarmored AC is the honest
+    # number -- and it has to be derived rather than stored blind, because
+    # raising DEX later has to move it.
+    ac = rules.unarmored_ac(scores.get("dex", 10))
+
     with _campaign_con() as con:
         cur = con.execute(
             "INSERT INTO characters (player_id, name, race, class, level, xp, "
             "str, dex, con, int_, wis, cha, max_hp, current_hp, temp_hp, ac, speed, "
-            "proficiency_bonus, gold) VALUES (?,?,?,?,1,0,?,?,?,?,?,?,?,?,0,10,?,2,0)",
+            "proficiency_bonus, gold) VALUES (?,?,?,?,1,0,?,?,?,?,?,?,?,?,0,?,?,2,0)",
             (player_id, name, race, class_,
              scores.get("str", 10), scores.get("dex", 10), scores.get("con", 10),
              scores.get("int_", 10), scores.get("wis", 10), scores.get("cha", 10),
-             max_hp, max_hp, speed)
+             max_hp, max_hp, ac, speed)
         )
         char_id = cur.lastrowid
         if level1_row:
@@ -221,12 +247,17 @@ def apply_level_up(character_id: int, target_level: int = None) -> dict:
     new_max_hp = char["max_hp"] + hp_gain
     new_prof = rules.proficiency_bonus(target_level)
 
+    # Counted across the whole jump rather than for the destination alone: enough
+    # XP at once can carry a character up two levels, and an improvement stepped
+    # over is one nobody ever gets.
+    asi_points = len(rules.asi_levels_crossed(char["level"], target_level)) * rules.ASI_POINTS
+
     features_added = []
     with _campaign_con() as con:
         con.execute(
             "UPDATE characters SET level=?, max_hp=?, current_hp=current_hp+?, "
-            "proficiency_bonus=? WHERE id=?",
-            (target_level, new_max_hp, hp_gain, new_prof, character_id)
+            "proficiency_bonus=?, pending_asi=pending_asi+? WHERE id=?",
+            (target_level, new_max_hp, hp_gain, new_prof, asi_points, character_id)
         )
         if level_row:
             level_data = json.loads(level_row["raw_json"])
@@ -239,7 +270,60 @@ def apply_level_up(character_id: int, target_level: int = None) -> dict:
                 features_added.append(feat["index"])
 
     return {"character_id": character_id, "level": target_level, "hp_gain": hp_gain,
-            "new_max_hp": new_max_hp, "proficiency_bonus": new_prof, "features_added": features_added}
+            "new_max_hp": new_max_hp, "proficiency_bonus": new_prof,
+            "features_added": features_added, "asi_points": asi_points,
+            "pending_asi": get_character(character_id)["pending_asi"]}
+
+
+def raise_ability(character_id: int, ability: str, amount: int = 1) -> dict:
+    """Spend part of an earned improvement on one ability score.
+
+    pending_asi counts points, not improvements -- two per improvement -- because
+    5e lets them be split across two abilities. Spending them one at a time is
+    the same operation as spending both at once, and a player who walks away
+    mid-choice finds the remainder still waiting.
+    """
+    char = get_character(character_id)
+    if not char:
+        raise ValueError(f"unknown character: {character_id}")
+
+    col = _SRD_TO_COL.get(ability, ability)
+    if col not in ABILITIES:
+        raise ValueError(f"not an ability: {ability}")
+
+    amount = int(amount)
+    if amount < 1:
+        raise ValueError("an improvement raises a score, it does not lower one")
+    if char["pending_asi"] < amount:
+        raise ValueError(
+            f"{char['name']} has {char['pending_asi']} improvement point(s), not {amount}")
+
+    old = char[col]
+    new = min(old + amount, rules.ABILITY_CAP)
+    if new == old:
+        raise ValueError(f"{ability.upper()} is already at {rules.ABILITY_CAP}")
+    granted = new - old
+
+    # A raised CON is worth hit points for every level already taken, not just
+    # the ones still to come -- 5e applies the new modifier retroactively.
+    hp_gain = 0
+    if col == "con":
+        hp_gain = (rules.ability_mod(new) - rules.ability_mod(old)) * char["level"]
+
+    new_ac = rules.unarmored_ac(new) if col == "dex" else char["ac"]
+
+    with _campaign_con() as con:
+        con.execute(
+            f"UPDATE characters SET {col}=?, max_hp=max_hp+?, current_hp=current_hp+?, "
+            "ac=?, pending_asi=pending_asi-? WHERE id=?",
+            (new, hp_gain, hp_gain, new_ac, granted, character_id)
+        )
+
+    after = get_character(character_id)
+    return {"character_id": character_id, "ability": rules.ability_label(col),
+            "from": old, "to": new, "granted": granted, "hp_gain": hp_gain,
+            "ac": after["ac"], "pending_asi": after["pending_asi"],
+            "name": char["name"]}
 
 
 def apply_damage(character_id: int, amount: int) -> dict:
