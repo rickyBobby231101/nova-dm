@@ -4,7 +4,10 @@ but isn't wired to anything. This phase proves the multiplayer plumbing works
 via a real live-sync round trip: roll a check, every connected device sees it."""
 import functools
 import json
+import os
+import shutil
 import socket as _socket
+import subprocess
 
 from flask import (
     Flask,
@@ -430,14 +433,57 @@ def _lan_ip():
         return None
 
 
+def _tailscale_address():
+    """This machine's address on the tailnet, if it is on one.
+
+    How a remote player actually reaches the game: the LAN address above is
+    meaningless to someone in another house, and the tailnet address works from
+    anywhere without forwarding a port or putting the game on the public
+    internet. Returns the MagicDNS name when there is one -- it is far easier to
+    read out than 100.x.y.z -- and falls back to the raw address.
+    """
+    if not shutil.which("tailscale"):
+        return None
+    try:
+        status = subprocess.run(["tailscale", "status", "--json"],
+                                capture_output=True, timeout=5, text=True)
+        if status.returncode == 0:
+            self_node = json.loads(status.stdout).get("Self") or {}
+            name = (self_node.get("DNSName") or "").rstrip(".")
+            if name:
+                return name
+            ips = self_node.get("TailscaleIPs") or []
+            if ips:
+                return ips[0]
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return None
+
+
 if __name__ == "__main__":
-    ip = _lan_ip()
+    # 0.0.0.0 keeps same-room play working over wifi. Set NOVA_DM_BIND to the
+    # tailnet address to serve *only* the tailnet -- worth doing if this laptop
+    # is ever on a network whose other occupants aren't invited.
+    host = os.environ.get("NOVA_DM_BIND", "0.0.0.0")
+    port = int(os.environ.get("NOVA_DM_PORT", "5050"))
+
+    lan = _lan_ip()
+    tailnet = _tailscale_address()
+
+    print(f"nova-dm running on {host}:{port}")
+    print(f"  here:    http://localhost:{port}")
+    if lan:
+        print(f"  wifi:    http://{lan}:{port}          (same house)")
+    if tailnet:
+        print(f"  tailnet: http://{tailnet}:{port}   <- send this to remote players")
+    else:
+        print("  tailnet: not connected -- run 'tailscale up' for remote players")
+
     # The codes are printed every start, not just the first: they live in a file
     # nobody is going to go looking for, and the DM needs to read the join code
     # out loud at the top of a session.
-    print("nova-dm running: http://localhost:5050" +
-          (f"  (LAN: http://{ip}:5050)" if ip else ""))
     print(f"  join code:   {auth.join_code()}      <- share this with the players")
     print(f"  DM password: {auth.dm_password()}  <- keep this")
     print(f"  (stored in {auth.SECRETS_PATH})")
-    socketio.run(app, host="0.0.0.0", port=5050, allow_unsafe_werkzeug=True)
+
+    socketio.run(app, host=host, port=port, allow_unsafe_werkzeug=True)
