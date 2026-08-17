@@ -63,6 +63,13 @@ DEFAULT_CHAIN = ["ollama", "ollama-tools", "ollama-gemma"]
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
+# How long one Ollama call may take. Generous because this hardware is slow and
+# a turn that arrives late still beats one that does not arrive: 300s was enough
+# for llama3.2 and silently turned NOVA_DM_NARRATOR into a trap, since a slower
+# narrator blew the budget, raised, and handed the turn to a provider with no
+# hope of finishing it.
+OLLAMA_TIMEOUT = int(os.environ.get("NOVA_DM_OLLAMA_TIMEOUT", "900"))
+
 
 class ProviderUnavailable(Exception):
     """This voice cannot speak right now -- no key, no credit, no server.
@@ -557,6 +564,23 @@ class OllamaProvider:
     # straight to execute -- and widening five run_turn signatures for one of
     # them would be worse than this.
     defaults: dict = {}
+    # Per-pass system prompts, set by run_turn. Falls back to the single
+    # `system` string so this provider still works when called directly.
+    prompts: dict = {}
+    # Optionally, a second model writes the prose.
+    #
+    # The two passes want different things. Planning is clerical -- name the
+    # rolls, get the argument names right -- and a 1B model does it in about a
+    # minute. Narration is the part anyone at the table actually experiences,
+    # and a 1B model writes it thinly.
+    #
+    # What makes the split affordable is that the narration prompt carries no
+    # tool schemas and no mechanics: 328 tokens against planning's 1170. A model
+    # that costs 14 minutes on the planning prompt costs about two on this one,
+    # which turns "unusably slow" into a trade worth offering.
+    #
+    # Unset by default: it roughly doubles a turn, and that is the table's call.
+    narrator_model = os.environ.get("NOVA_DM_NARRATOR") or None
     # The fastest thing on this box that can hold a scene together. gemma3 is
     # better prose and 4x the wait; see DEFAULT_CHAIN for the measurements.
     default_model = "llama3.2:1b"
@@ -578,12 +602,12 @@ class OllamaProvider:
             return False
         return self.model in names
 
-    def _chat(self, system, user, schema):
+    def _chat(self, system, user, schema, model=None):
         try:
             response = requests.post(
                 f"{self.host}/api/chat",
                 json={
-                    "model": self.model,
+                    "model": model or self.model,
                     "stream": False,
                     "format": schema,
                     "keep_alive": self.keep_alive,
@@ -593,7 +617,7 @@ class OllamaProvider:
                         {"role": "user", "content": user},
                     ],
                 },
-                timeout=300,
+                timeout=OLLAMA_TIMEOUT,
             )
         except requests.RequestException as e:
             raise ProviderUnavailable(str(e)) from e
@@ -610,7 +634,8 @@ class OllamaProvider:
         by_name = {t["name"]: t for t in tools}
 
         plan = self._chat(
-            system + "\n" + INTENT_INSTRUCTIONS + tool_signatures(tools),
+            self.prompts.get("planning", system) + "\n" + INTENT_INSTRUCTIONS
+            + tool_signatures(tools),
             user_message + "\n\nWhich tools must the engine run?",
             intent_schema(tools),
         )
@@ -631,13 +656,14 @@ class OllamaProvider:
             transcript = "(no rolls were needed)"
 
         told = self._chat(
-            system + "\n" + NARRATION_INSTRUCTIONS,
+            self.prompts.get("narration", system) + "\n" + NARRATION_INSTRUCTIONS,
             f"{user_message}\n\nEngine results:\n{transcript}",
             {
                 "type": "object",
                 "properties": {"narration": {"type": "string"}},
                 "required": ["narration"],
             },
+            model=self.narrator_model,
         )
         narration = (told.get("narration") or "").strip()
         if narration:
@@ -776,7 +802,8 @@ def chain():
     return [n.strip() for n in override.split(",")] if override else list(DEFAULT_CHAIN)
 
 
-def run_turn(system, user_message, tools, execute, emit, on_provider=None, defaults=None):
+def run_turn(system, user_message, tools, execute, emit, on_provider=None, defaults=None,
+             prompts=None):
     """Ask each candidate voice in turn until one narrates the turn.
 
     A voice that has already emitted narration is never abandoned mid-turn --
@@ -790,6 +817,10 @@ def run_turn(system, user_message, tools, execute, emit, on_provider=None, defau
             continue
         provider = build(name)
         provider.defaults = defaults or {}
+        # Optional per-pass system prompts. Only the two-pass path can use them;
+        # everyone else narrates and decides in one conversation and keeps
+        # `system` whole.
+        provider.prompts = prompts or {}
         if not provider.available():
             _demoted.add(name)
             continue

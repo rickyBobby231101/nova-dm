@@ -711,3 +711,48 @@ def test_real_dice_expressions_still_pass():
     by = {t["name"]: t for t in TOOLS}
     for expr in ["1d20", "2d6+3", "d8", "4d6-1", " 1d20 "]:
         assert llm.intent_to_call({"tool": "roll_dice", "expr": expr}, by) is not None
+
+
+# ---------------------------------------------------------------------------
+# Two passes, two prompts, optionally two models
+# ---------------------------------------------------------------------------
+
+def test_each_pass_gets_only_the_rules_it_can_act_on(monkeypatch):
+    sent = _fake_ollama(monkeypatch, [{"intents": []}, {"narration": "Quiet."}])
+    p = llm.OllamaProvider()
+    p.prompts = {"planning": "PLAN-RULES", "narration": "PROSE-RULES"}
+    p.run_turn("WHOLE-THING", "I listen at the door.", TOOLS, lambda n, a: {}, lambda t: None)
+
+    planning, narration = sent[0]["messages"][0]["content"], sent[1]["messages"][0]["content"]
+    assert "PLAN-RULES" in planning and "PROSE-RULES" not in planning
+    assert "PROSE-RULES" in narration and "PLAN-RULES" not in narration
+    # the narration pass carries no tool signatures: nothing left to call
+    assert "roll_dice(expr)" in planning
+    assert "roll_dice(expr)" not in narration
+
+
+def test_a_provider_called_without_per_pass_prompts_still_works(monkeypatch):
+    """Falls back to the single system string."""
+    sent = _fake_ollama(monkeypatch, [{"intents": []}, {"narration": "Quiet."}])
+    llm.OllamaProvider().run_turn("ONLY-PROMPT", "u", TOOLS, lambda n, a: {}, lambda t: None)
+    assert "ONLY-PROMPT" in sent[0]["messages"][0]["content"]
+    assert "ONLY-PROMPT" in sent[1]["messages"][0]["content"]
+
+
+def test_a_second_model_can_write_the_prose(monkeypatch):
+    """Planning is clerical and wants speed; narration is what the table hears."""
+    sent = _fake_ollama(monkeypatch, [{"intents": []}, {"narration": "The door gives."}])
+    p = llm.OllamaProvider()
+    p.narrator_model = "qwen3:4b"
+    p.run_turn("S", "u", TOOLS, lambda n, a: {}, lambda t: None)
+
+    assert sent[0]["model"] == "llama3.2:1b"   # planned by the fast one
+    assert sent[1]["model"] == "qwen3:4b"      # narrated by the better one
+
+
+def test_one_model_does_both_when_no_narrator_is_set(monkeypatch):
+    sent = _fake_ollama(monkeypatch, [{"intents": []}, {"narration": "x"}])
+    p = llm.OllamaProvider()
+    p.narrator_model = None
+    p.run_turn("S", "u", TOOLS, lambda n, a: {}, lambda t: None)
+    assert sent[0]["model"] == sent[1]["model"] == "llama3.2:1b"

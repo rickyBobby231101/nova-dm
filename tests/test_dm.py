@@ -488,3 +488,25 @@ def test_withholding_them_actually_shrinks_the_prompt():
     assert peace < war
     # worth having: a fifth of the tool budget, re-read on every call
     assert (war - peace) / war > 0.15
+
+
+def test_the_prompt_is_split_without_losing_a_rule():
+    """Every rule still reaches the pass it governs -- the split is a routing
+    change, not a trim of the rules themselves."""
+    assert dm.SYSTEM_PROMPT == dm._IDENTITY + dm._MECHANICS + dm._PROSE
+    assert dm.PLANNING_PROMPT == dm._IDENTITY + dm._MECHANICS
+    assert dm.NARRATION_PROMPT == dm._IDENTITY + dm._PROSE
+
+    # planning is told what to call and nothing about style
+    assert "roll_check" in dm.PLANNING_PROMPT
+    assert "second person" not in dm.PLANNING_PROMPT
+    # narration is told how to write and nothing about calling
+    assert "second person" in dm.NARRATION_PROMPT
+    assert "start_encounter" not in dm.NARRATION_PROMPT
+    # both still know who they are
+    assert "Dungeon Master" in dm.PLANNING_PROMPT and "Dungeon Master" in dm.NARRATION_PROMPT
+
+
+def test_the_narration_pass_is_much_cheaper_than_the_planning_pass():
+    """The whole reason a slower, better model can afford to write the prose."""
+    assert len(dm.NARRATION_PROMPT) < len(dm.PLANNING_PROMPT) * 0.75
