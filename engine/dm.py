@@ -38,6 +38,32 @@ Advancement:
 - Leveling is the engine's job too. If it announces a level-up, weave it into the story; never tell a player they have levelled unless the engine says so.
 """
 
+# Tools that need a fight already on the board: every one of them takes a
+# combatant id, which only exists inside an encounter.
+ENCOUNTER_ONLY = {
+    "end_encounter",
+    "advance_turn",
+    "monster_attack",
+    "damage_combatant",
+    "heal_combatant",
+}
+
+
+def tools_for(in_combat: bool):
+    """Only the tools this situation can actually use.
+
+    The whole list is re-sent on every iteration of the tool loop, and on this
+    machine reading the prompt is what a turn actually costs -- measured at 12.4
+    tokens/sec, so carrying the encounter tools through a conversation nobody is
+    fighting in spends around thirty seconds per call to offer the model six
+    things it cannot legally call. start_encounter deliberately stays: that is
+    how a fight begins.
+    """
+    if in_combat:
+        return TOOLS
+    return [t for t in TOOLS if t["name"] not in ENCOUNTER_ONLY]
+
+
 TOOLS = [
     {
         "name": "roll_check",
@@ -493,11 +519,15 @@ def handle_player_action(character_id: int, action_text: str, socketio):
         except Exception:
             pass
 
+    # A fight on the board decides which tools are worth paying to send.
+    # get_state already filters to status='active', so a board at all means combat.
+    in_combat = encounter.get_state() is not None
+
     try:
         outcome = llm.run_turn(
             SYSTEM_PROMPT,
             prompt,
-            TOOLS,
+            tools_for(in_combat),
             lambda name, tool_input: _execute_tool(name, tool_input, socketio),
             narrate,
             on_provider=announce,

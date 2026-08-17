@@ -461,3 +461,30 @@ def test_handle_player_action_surfaces_a_dead_voice_instead_of_hanging(monkeypat
 
     # even on the error path the player's button must be released
     assert socketio.emit.call_args_list[-1].args[0] == "turn_complete"
+
+
+# ---------------------------------------------------------------------------
+# Situational tool sets -- prompt size is what a turn costs on this hardware
+# ---------------------------------------------------------------------------
+
+def test_encounter_tools_are_withheld_when_nobody_is_fighting():
+    """They all take a combatant id, which does not exist outside a fight, so
+    sending them buys nothing and is re-read on every iteration."""
+    out = {t["name"] for t in dm.tools_for(in_combat=False)}
+    assert not (out & dm.ENCOUNTER_ONLY)
+    # but a fight has to be startable from outside one
+    assert "start_encounter" in out
+    assert {"roll_check", "roll_dice", "apply_damage", "set_scene"} <= out
+
+
+def test_every_tool_is_available_in_a_fight():
+    assert dm.tools_for(in_combat=True) == dm.TOOLS
+
+
+def test_withholding_them_actually_shrinks_the_prompt():
+    import json
+    peace = len(json.dumps(dm.tools_for(in_combat=False)))
+    war = len(json.dumps(dm.tools_for(in_combat=True)))
+    assert peace < war
+    # worth having: a fifth of the tool budget, re-read on every call
+    assert (war - peace) / war > 0.15

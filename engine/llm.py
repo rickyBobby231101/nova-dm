@@ -41,12 +41,23 @@ import requests
 MAX_TOOL_ITERATIONS = 12
 
 # Tried in this order when NOVA_DM_LLM_PROVIDER is unset or "auto".
-# Local first, and local only by default. The hosted voices are better writers,
-# but they cost money, need a key, and Daniel wants the table to run on hardware
-# he owns -- so the chain is qwen3's tool loop, then the JSON-plan path for the
-# older local models that cannot call tools. The hosted providers are still
-# registered and reachable through NOVA_DM_LLM_CHAIN for anyone who wants them.
-DEFAULT_CHAIN = ["ollama-tools", "ollama"]
+#
+# Local only, and ordered by what this hardware can actually do rather than by
+# which model is cleverest. Measured on the Inspiron against a real DM prompt:
+#
+#   llama3.2:1b  prompt 12.4 tok/s, gen 4.0 tok/s  ->  ~2.4 min/turn (2 calls)
+#   qwen3:4b     prompt  2.8 tok/s, gen 1.5 tok/s  ->  ~47 min/turn (3 calls)
+#
+# qwen3 is the better DM -- it calls tools natively, so the engine holds the
+# dice for the strong reason rather than because the model was asked to plan
+# first. It is also unplayable here. llama3.2 leads because a turn that arrives
+# is worth more than a turn that is argued for, and the JSON-plan path keeps the
+# same guarantee by a different route: intentions before prose, always.
+#
+# qwen3 and gemma3 sit behind it as real backups, not decoration -- if llama3.2
+# is not pulled, or Ollama refuses it, someone else takes the chair instead of
+# the table losing its DM. They cost nothing while llama3.2 answers.
+DEFAULT_CHAIN = ["ollama", "ollama-tools", "ollama-gemma"]
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
@@ -538,7 +549,9 @@ class OllamaProvider:
     """
 
     name = "ollama"
-    default_model = "gemma3:4b"
+    # The fastest thing on this box that can hold a scene together. gemma3 is
+    # better prose and 4x the wait; see DEFAULT_CHAIN for the measurements.
+    default_model = "llama3.2:1b"
     # Ollama drops a model from memory after 5 idle minutes by default, and
     # reloading gemma3 off this box's disk measured at 69 seconds -- longer than
     # the turn itself. Asking per request keeps it resident without anyone
@@ -666,12 +679,25 @@ def intent_to_call(intent, by_name):
 # Registry and fallback
 # --------------------------------------------------------------------------
 
+class OllamaGemmaProvider(OllamaProvider):
+    """The same two-pass path, on gemma3.
+
+    A separate registry name purely so the chain can name a second local model:
+    NOVA_DM_LLM_MODEL is global, so without this there is no way to say "try
+    llama3.2, then gemma3" in one chain.
+    """
+
+    name = "ollama-gemma"
+    default_model = "gemma3:4b"
+
+
 PROVIDERS = {
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
     "gemini": GeminiProvider,
     "ollama-tools": OllamaToolProvider,
     "ollama": OllamaProvider,
+    "ollama-gemma": OllamaGemmaProvider,
 }
 
 _demoted = set()

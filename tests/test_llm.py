@@ -98,11 +98,23 @@ def _chain(monkeypatch, *names):
 # chain selection
 # ---------------------------------------------------------------------------
 
-def test_default_chain_is_local_only():
-    """Runs on hardware Daniel owns: no key, no bill, no network. qwen3's tool
-    loop first, the JSON-plan path behind it for models that can't call tools."""
-    assert llm.chain() == ["ollama-tools", "ollama"]
+def test_default_chain_is_local_and_ordered_by_what_the_box_can_do():
+    """Not by which model is cleverest. qwen3 calls tools natively and is the
+    better DM; it is also ~47 min/turn on this hardware against llama3.2's ~2.4,
+    so it sits behind as a backup rather than leading."""
+    assert llm.chain() == ["ollama", "ollama-tools", "ollama-gemma"]
     assert "anthropic" not in llm.chain()
+
+
+def test_the_lead_voice_is_the_fast_one():
+    assert llm.PROVIDERS["ollama"].default_model == "llama3.2:1b"
+    assert llm.PROVIDERS["ollama-gemma"].default_model == "gemma3:4b"
+    assert llm.PROVIDERS["ollama-tools"].default_model == "qwen3:4b"
+
+
+def test_gemma_backup_uses_the_json_plan_path():
+    """It cannot call tools, so it must inherit the two-pass path, not the loop."""
+    assert issubclass(llm.PROVIDERS["ollama-gemma"], llm.OllamaProvider)
 
 
 def test_hosted_voices_are_still_reachable_when_asked_for(monkeypatch):
