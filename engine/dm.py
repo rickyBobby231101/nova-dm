@@ -537,6 +537,11 @@ def handle_player_action(character_id: int, action_text: str, socketio):
             lambda name, tool_input: _execute_tool(name, tool_input, socketio),
             narrate,
             on_provider=announce,
+            # Who acted is not in doubt -- we were handed the character before
+            # the model was asked anything. Supplying it spares a small model
+            # the clerical work of echoing an id back, which it gets wrong often
+            # enough to lose the roll entirely.
+            defaults={"character_id": actor["id"]},
         )
         if outcome.error:
             # Shown at the table but deliberately not logged as DM narration and

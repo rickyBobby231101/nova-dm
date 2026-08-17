@@ -7,6 +7,18 @@ from . import rules
 _DICE_RE = re.compile(r"^(\d*)d(\d+)([+-]\d+)?$")
 
 
+def is_valid(expr) -> bool:
+    """Whether roll() would accept this.
+
+    Exists so a caller can reject an expression before committing to it rather
+    than catching the failure afterwards. A small model asked for a dice
+    expression will hand back things like "(DEX + 2) - (AC of lock)", which is
+    reasoning rather than dice -- and a roll the engine cannot make is better
+    dropped than attempted.
+    """
+    return bool(isinstance(expr, str) and _DICE_RE.match(expr.strip().replace(" ", "")))
+
+
 def roll(expr: str) -> dict:
     """roll("2d6+3") -> {"expr", "rolls": [...], "modifier": 3, "total"}"""
     m = _DICE_RE.match(expr.strip().replace(" ", ""))

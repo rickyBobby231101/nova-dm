@@ -51,3 +51,14 @@ def test_roll_check_modifier_includes_proficiency():
     assert result["modifier"] == 2 + 3  # ability_mod(14)=2, plus prof bonus
     result_unprof = dice.roll_check(char, "dex", proficient=False)
     assert result_unprof["modifier"] == 2
+
+
+def test_is_valid_accepts_what_roll_accepts():
+    for expr in ["1d20", "2d6+3", "d8", "10d10-2", " 1d6 "]:
+        assert dice.is_valid(expr)
+        dice.roll(expr)  # must not raise
+
+
+def test_is_valid_rejects_a_model_s_reasoning():
+    for expr in ["(DEX + 2) - (AC of lock)", "", "twenty", None, 7, "1d"]:
+        assert not dice.is_valid(expr)

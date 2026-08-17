@@ -660,3 +660,54 @@ def test_signatures_are_sent_with_the_intent_pass(monkeypatch):
     llm.OllamaProvider().run_turn("SYSTEM", "I pick the lock.", TOOLS,
                                   lambda n, a: {}, lambda t: None)
     assert "roll_dice(expr)" in sent[0]["messages"][0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# intent repair: what the engine already knows, and what it must refuse
+# ---------------------------------------------------------------------------
+
+def test_a_missing_character_id_is_filled_from_what_the_engine_knows():
+    """Observed: llama3.2 got three of roll_check's four arguments right and
+    lost the whole roll on the fourth. The acting character was never in doubt."""
+    by = {t["name"]: t for t in TOOLS}
+    call = llm.intent_to_call(
+        {"tool": "roll_check", "ability": "dex"}, by, {"character_id": 7})
+    assert call is not None
+    assert call.input == {"ability": "dex", "character_id": 7}
+
+
+def test_a_supplied_value_beats_the_default():
+    by = {t["name"]: t for t in TOOLS}
+    call = llm.intent_to_call(
+        {"tool": "roll_check", "ability": "dex", "character_id": 2}, by,
+        {"character_id": 7})
+    assert call.input["character_id"] == 2
+
+
+def test_defaults_do_not_smuggle_arguments_a_tool_does_not_take():
+    by = {t["name"]: t for t in TOOLS}
+    call = llm.intent_to_call({"tool": "roll_dice", "expr": "1d20"}, by,
+                              {"character_id": 7})
+    assert call.input == {"expr": "1d20"}  # roll_dice has no character_id
+
+
+def test_defaults_cannot_rescue_a_genuinely_incomplete_intent():
+    by = {t["name"]: t for t in TOOLS}
+    # ability is still required and nothing supplies it
+    assert llm.intent_to_call({"tool": "roll_check"}, by, {"character_id": 7}) is None
+
+
+def test_an_expression_the_engine_cannot_roll_is_refused():
+    """Observed verbatim from llama3.2. It is reasoning, not dice, and rolling
+    it would put an invented number into the narration."""
+    by = {t["name"]: t for t in TOOLS}
+    assert llm.intent_to_call(
+        {"tool": "roll_dice", "expr": "(DEX + 2) - (AC of lock)"}, by) is None
+    assert llm.intent_to_call({"tool": "roll_dice", "expr": ""}, by) is None
+    assert llm.intent_to_call({"tool": "roll_dice", "expr": 7}, by) is None
+
+
+def test_real_dice_expressions_still_pass():
+    by = {t["name"]: t for t in TOOLS}
+    for expr in ["1d20", "2d6+3", "d8", "4d6-1", " 1d20 "]:
+        assert llm.intent_to_call({"tool": "roll_dice", "expr": expr}, by) is not None

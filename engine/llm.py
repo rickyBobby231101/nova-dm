@@ -36,6 +36,8 @@ import re
 
 import requests
 
+from . import dice
+
 # A combat round legitimately spends several calls (attack, damage, advance
 # turn), so this has to be generous enough to carry a whole exchange.
 MAX_TOOL_ITERATIONS = 12
@@ -549,6 +551,12 @@ class OllamaProvider:
     """
 
     name = "ollama"
+    # What the engine already knows and need not ask the model for; run_turn
+    # sets it per turn. An attribute rather than an argument because only this
+    # path validates intents -- the tool-calling providers hand arguments
+    # straight to execute -- and widening five run_turn signatures for one of
+    # them would be worse than this.
+    defaults: dict = {}
     # The fastest thing on this box that can hold a scene together. gemma3 is
     # better prose and 4x the wait; see DEFAULT_CHAIN for the measurements.
     default_model = "llama3.2:1b"
@@ -609,7 +617,7 @@ class OllamaProvider:
 
         results = []
         for intent in plan.get("intents") or []:
-            call = intent_to_call(intent, by_name)
+            call = intent_to_call(intent, by_name, self.defaults)
             if call is None:
                 # The engine is the referee: a malformed or unknown intent is
                 # dropped, not guessed at. gemma3 reaches for the wrong tool
@@ -685,8 +693,16 @@ def intent_schema(tools):
     }
 
 
-def intent_to_call(intent, by_name):
-    """Narrow a flat intent back to one tool's real arguments, or reject it."""
+def intent_to_call(intent, by_name, defaults=None):
+    """Narrow a flat intent back to one tool's real arguments, or reject it.
+
+    `defaults` fills in what the engine already knows and the model keeps
+    forgetting. Chiefly character_id: the acting character is not in doubt --
+    the engine was handed it before the model was asked anything -- so making a
+    1B model echo it back correctly is clerical work it is measurably bad at,
+    and dropping an otherwise perfect roll_check over it costs the table a roll.
+    A value the model did supply always wins; this only fills a gap.
+    """
     if not isinstance(intent, dict):
         return None
     tool = by_name.get(intent.get("tool"))
@@ -695,8 +711,20 @@ def intent_to_call(intent, by_name):
     schema = tool["input_schema"]
     allowed = schema.get("properties", {})
     args = {k: v for k, v in intent.items() if k != "tool" and k in allowed}
+
+    for field, value in (defaults or {}).items():
+        if field in allowed and field not in args:
+            args[field] = value
+
     if any(field not in args for field in schema.get("required", [])):
         return None
+
+    # A dice expression the engine cannot parse is not a roll, whatever the
+    # model called it -- rejecting it here keeps a nonsense roll out of the
+    # narration rather than raising from inside the tool.
+    if "expr" in args and not dice.is_valid(args["expr"]):
+        return None
+
     return ToolCall(tool["name"], tool["name"], args)
 
 
@@ -748,7 +776,7 @@ def chain():
     return [n.strip() for n in override.split(",")] if override else list(DEFAULT_CHAIN)
 
 
-def run_turn(system, user_message, tools, execute, emit, on_provider=None):
+def run_turn(system, user_message, tools, execute, emit, on_provider=None, defaults=None):
     """Ask each candidate voice in turn until one narrates the turn.
 
     A voice that has already emitted narration is never abandoned mid-turn --
@@ -761,6 +789,7 @@ def run_turn(system, user_message, tools, execute, emit, on_provider=None):
         if name in _demoted or name not in PROVIDERS:
             continue
         provider = build(name)
+        provider.defaults = defaults or {}
         if not provider.available():
             _demoted.add(name)
             continue
