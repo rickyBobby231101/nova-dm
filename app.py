@@ -25,6 +25,7 @@ from flask_socketio import SocketIO, emit, join_room
 
 from engine import (
     auth,
+    backup,
     character,
     chronicle,
     conditions,
@@ -534,6 +535,13 @@ if __name__ == "__main__":
     print(f"  join code:   {auth.join_code()}      <- share this with the players")
     print(f"  DM password: {auth.dm_password()}  <- keep this")
     print(f"  (stored in {auth.SECRETS_PATH})")
+
+    # Snapshot before the table opens. Cheap (tens of KB), automatic, and the
+    # one moment we know the campaign is intact -- nobody remembers to back up
+    # a game they are about to play.
+    saved = backup.snapshot("startup")
+    if saved:
+        print(f"  campaign backed up: {saved.name}")
 
     for warning in _ollama_rivals():
         print(warning)

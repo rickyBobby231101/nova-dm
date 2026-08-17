@@ -1,11 +1,43 @@
 import os
 import sys
+import tempfile
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from engine import voice
+# Point the campaign database somewhere disposable BEFORE anything under engine/
+# is imported, because engine.character reads it at module level.
+#
+# This is load-bearing, not tidiness. The suite deletes the campaign database
+# between cases, and that file used to be the real one -- the campaign holding
+# everybody's characters. It cost a player two characters. A test run must not
+# be able to reach the game's own data at all, so the safety is structural
+# rather than a rule someone has to remember.
+_TEST_DB_DIR = tempfile.mkdtemp(prefix="nova-dm-tests-")
+os.environ["NOVA_DM_CAMPAIGN_DB"] = os.path.join(_TEST_DB_DIR, "campaign.sqlite")
+
+# Likewise for the secrets and the synthesized audio: neither belongs in a test
+# run, and rotating the real join code mid-session would lock out a live table.
+os.environ.setdefault("NOVA_DM_SECRETS", os.path.join(_TEST_DB_DIR, "secrets.json"))
+os.environ.setdefault("NOVA_DM_AUDIO_DIR", os.path.join(_TEST_DB_DIR, "narration"))
+
+from engine import character, voice  # noqa: E402  (must follow the env setup above)
+
+
+def pytest_configure(config):
+    """Refuse to run at all if the redirect did not take.
+
+    A wrong path here is not a failing test -- it is data loss, and it would be
+    discovered afterwards. Better to stop before the first case runs.
+    """
+    real = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "db", "campaign.sqlite"))
+    in_use = os.path.abspath(character.CAMPAIGN_DB_PATH)
+    if in_use == real:
+        raise pytest.UsageError(
+            f"tests would write to the REAL campaign database ({real}). "
+            "engine.character.CAMPAIGN_DB_PATH must honour NOVA_DM_CAMPAIGN_DB."
+        )
 
 
 @pytest.fixture(autouse=True)

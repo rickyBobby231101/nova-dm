@@ -57,6 +57,29 @@ The player-facing walkthrough lives in `Join-The-Table.md`.
 Nothing is ever exposed to the public internet. Only devices on your tailnet can
 reach the game, and they still need the join code.
 
+## Backups
+
+The campaign is the one thing here that cannot be rebuilt. Code can be
+rewritten and the SRD re-ingested; a character somebody rolled on their phone,
+and the story that happened to it, has no source to restore from.
+
+A snapshot is taken **automatically every time the service starts**, and the
+last 20 are kept in `db/backups/`. They are tens of kilobytes.
+
+```
+.venv/bin/python -m engine.backup                    # snapshot now
+.venv/bin/python -m engine.backup list               # what each one holds
+.venv/bin/python -m engine.backup restore <file>     # put one back
+```
+
+`list` prints the characters and event count inside each snapshot, because a
+backup you cannot identify is one you will not dare restore. `restore` snapshots
+the current campaign first -- restoring the wrong file is exactly when you need
+the thing you just overwrote.
+
+Players can also export their own sheet from `/characters`, which produces a
+portable JSON file that survives the database entirely.
+
 ## When something's wrong
 
 **Nobody can connect.** Check the game is actually up — `systemctl --user
@@ -66,6 +89,12 @@ forwarding to `127.0.0.1:5050`.
 
 **A remote player sees nothing but the laptop works.** Their Tailscale toggle is
 probably off. Being logged in is not the same as being connected.
+
+**Tests and the live game.** The suite runs against its own throwaway database
+(`NOVA_DM_CAMPAIGN_DB`, set in `tests/conftest.py`), so `pytest` is safe to run
+while people are playing and cannot touch `db/campaign.sqlite`. It used to
+delete it -- that cost a player two characters. `conftest.py` refuses to start
+if the redirect ever stops working.
 
 **Turns suddenly take many minutes.** Run `ollama ps`. Only one model stays
 resident, so if something left a different one loaded, the first turn pays to

@@ -11,7 +11,16 @@ from . import rules
 
 DB_DIR = os.path.join(os.path.dirname(__file__), "..", "db")
 SRD_DB_PATH = os.path.join(DB_DIR, "srd.sqlite")
-CAMPAIGN_DB_PATH = os.path.join(DB_DIR, "campaign.sqlite")
+
+# Overridable so the tests can be pointed somewhere disposable. They delete this
+# file between cases, and for a long time that file was the real campaign -- the
+# one holding everyone's characters. Running the suite while the game was up
+# corrupted it, and running it while the game was down silently destroyed it.
+# Losing a player's character to a test run is not a risk worth carrying for the
+# convenience of a hardcoded path.
+CAMPAIGN_DB_PATH = os.environ.get(
+    "NOVA_DM_CAMPAIGN_DB", os.path.join(DB_DIR, "campaign.sqlite")
+)
 
 ABILITIES = ["str", "dex", "con", "int_", "wis", "cha"]
 _SRD_TO_COL = {"str": "str", "dex": "dex", "con": "con", "int": "int_", "wis": "wis", "cha": "cha"}
