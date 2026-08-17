@@ -11,12 +11,17 @@ handling:
   * Models that call tools natively (Claude, GPT, Gemini) run the Phase 3 loop
     unchanged -- narrate, call a tool, see the real result, narrate again.
 
-  * Local models mostly cannot. Ollama refuses tools outright for gemma3 and
+  * Older local models cannot. Ollama refuses tools outright for gemma3 and
     deepseek-r1, and llama3.2:1b accepts them only to invent its own argument
     names. For those there is the JSON-plan path in OllamaProvider, which is
     the design the original spec called for: the model names the rolls it wants,
     the engine makes them, and only then does the model get to describe what
     happened.
+
+  * Newer local models can, and qwen3 does it properly -- real tool_calls with
+    the right argument names. OllamaToolProvider runs it through the same loop
+    as the hosted voices, which is why the default chain is now local-only:
+    running on hardware you own no longer costs the stronger guarantee.
 
 What survives across both, and is the whole point of the seam, is the Phase 3
 rule: the model never invents a die roll, a check result, or an HP total. In the
@@ -27,6 +32,7 @@ has not been told the character stuck.
 """
 import json
 import os
+import re
 
 import requests
 
@@ -34,10 +40,13 @@ import requests
 # turn), so this has to be generous enough to carry a whole exchange.
 MAX_TOOL_ITERATIONS = 12
 
-# Tried in this order when NOVA_DM_LLM_PROVIDER is unset or "auto". Hosted
-# models first for quality, the local one last because it is the floor that is
-# always there -- no key, no bill, no network.
-DEFAULT_CHAIN = ["anthropic", "openai", "gemini", "ollama"]
+# Tried in this order when NOVA_DM_LLM_PROVIDER is unset or "auto".
+# Local first, and local only by default. The hosted voices are better writers,
+# but they cost money, need a key, and Daniel wants the table to run on hardware
+# he owns -- so the chain is qwen3's tool loop, then the JSON-plan path for the
+# older local models that cannot call tools. The hosted providers are still
+# registered and reachable through NOVA_DM_LLM_CHAIN for anyone who wants them.
+DEFAULT_CHAIN = ["ollama-tools", "ollama"]
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
@@ -408,6 +417,117 @@ roll or an HP change that is not listed.
 """
 
 
+class OllamaToolProvider(ToolLoopProvider):
+    """A local model that can actually call tools.
+
+    OllamaProvider below exists because the local models available when Phase 8
+    was written could not: Ollama refuses tools outright for gemma3 and
+    deepseek-r1, and llama3.2:1b invents its own argument names. qwen3 does not
+    need that crutch -- it emits real tool_calls with the right argument names --
+    so it runs the same loop the hosted voices do, and the engine keeps the dice
+    for the same reason rather than a weaker one.
+
+    Two dialect quirks against the OpenAI shape: Ollama hands back `arguments`
+    already parsed as an object rather than a JSON string, and it identifies a
+    tool result by name rather than by a call id.
+    """
+
+    name = "ollama-tools"
+    default_model = "qwen3:4b"
+    keep_alive = os.environ.get("NOVA_DM_OLLAMA_KEEP_ALIVE", "1h")
+
+    def __init__(self, model=None, host=None):
+        self.model = model or self.default_model
+        self.host = host or OLLAMA_HOST
+
+    def available(self):
+        try:
+            response = requests.get(f"{self.host}/api/tags", timeout=5)
+            names = [m["name"] for m in response.json().get("models", [])]
+        except (requests.RequestException, ValueError, KeyError):
+            return False
+        return self.model in names
+
+    def _begin(self, system, user_message, tools):
+        return {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t["input_schema"],
+                    },
+                }
+                for t in tools
+            ],
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_message},
+            ],
+        }
+
+    def _step(self, state):
+        try:
+            response = requests.post(
+                f"{self.host}/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": state["messages"],
+                    "tools": state["tools"],
+                    "stream": False,
+                    "keep_alive": self.keep_alive,
+                    # qwen3 reasons by default and this box is slow enough that
+                    # thinking tokens cost real seconds at the table. Any leak
+                    # past this is stripped below rather than read aloud.
+                    "think": False,
+                },
+                timeout=600,
+            )
+        except requests.RequestException as e:
+            raise ProviderUnavailable(str(e)) from e
+
+        body = response.json()
+        if "error" in body:
+            raise ProviderUnavailable(body["error"])
+
+        message = body.get("message") or {}
+        calls = []
+        for call in message.get("tool_calls") or []:
+            fn = call.get("function") or {}
+            args = fn.get("arguments")
+            if isinstance(args, str):  # some builds still send a JSON string
+                try:
+                    args = json.loads(args or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+            calls.append(ToolCall(call.get("id") or fn.get("name"), fn.get("name"), args or {}))
+
+        return Reply(_strip_thinking(message.get("content")), calls, raw=message)
+
+    def _record(self, state, reply, results):
+        state["messages"].append(reply.raw)
+        for call, result in results:
+            state["messages"].append({
+                "role": "tool",
+                "tool_name": call.name,
+                "content": json.dumps(result),
+            })
+
+
+def _strip_thinking(content):
+    """Drop a reasoning block a local model left in its prose.
+
+    Narration goes to a text-to-speech engine and is read to the table, so
+    "Okay, the user wants me to describe..." is not a cosmetic problem -- it is
+    the DM saying it out loud.
+    """
+    text = content or ""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"^\s*<think>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
+
+
 class OllamaProvider:
     """Two passes, because one pass lets the model narrate before the dice exist.
 
@@ -550,6 +670,7 @@ PROVIDERS = {
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
     "gemini": GeminiProvider,
+    "ollama-tools": OllamaToolProvider,
     "ollama": OllamaProvider,
 }
 

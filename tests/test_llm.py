@@ -98,9 +98,18 @@ def _chain(monkeypatch, *names):
 # chain selection
 # ---------------------------------------------------------------------------
 
-def test_default_chain_prefers_hosted_and_ends_local():
-    # ollama last on purpose: it is the floor that needs no key and no network.
-    assert llm.chain() == ["anthropic", "openai", "gemini", "ollama"]
+def test_default_chain_is_local_only():
+    """Runs on hardware Daniel owns: no key, no bill, no network. qwen3's tool
+    loop first, the JSON-plan path behind it for models that can't call tools."""
+    assert llm.chain() == ["ollama-tools", "ollama"]
+    assert "anthropic" not in llm.chain()
+
+
+def test_hosted_voices_are_still_reachable_when_asked_for(monkeypatch):
+    """Local-only is the default, not a removal."""
+    monkeypatch.setenv("NOVA_DM_LLM_CHAIN", "anthropic,ollama")
+    assert llm.chain() == ["anthropic", "ollama"]
+    assert "anthropic" in llm.PROVIDERS
 
 
 def test_explicit_provider_is_honoured_exactly(monkeypatch):
@@ -523,3 +532,90 @@ def test_openai_records_each_tool_result_as_its_own_message():
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "call_1"
     assert json.loads(tool_messages[0]["content"]) == {"total": 4}
+
+
+# ---------------------------------------------------------------------------
+# OllamaToolProvider -- a local model that calls tools for real
+# ---------------------------------------------------------------------------
+
+def _fake_ollama_chat(monkeypatch, messages):
+    """Script /api/chat replies. Each entry is the `message` object Ollama
+    would return."""
+    sent = []
+
+    def fake_post(url, json=None, timeout=None):
+        sent.append(json)
+        return MagicMock(json=lambda: {"message": messages[len(sent) - 1]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    return sent
+
+
+def test_qwen_calls_a_tool_and_narrates_from_the_real_result(monkeypatch):
+    """The whole reason this provider exists: the engine rolls, not the model."""
+    sent = _fake_ollama_chat(monkeypatch, [
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"function": {"name": "roll_check",
+                                      "arguments": {"character_id": 1, "ability": "dex"}}}]},
+        {"role": "assistant", "content": "The rogue lands it, barely."},
+    ])
+    said, rolled = [], []
+
+    def execute(name, args):
+        rolled.append((name, args))
+        return {"total": 18}
+
+    llm.OllamaToolProvider().run_turn("SYSTEM", "I leap the gap.", TOOLS, execute, said.append)
+
+    assert rolled == [("roll_check", {"character_id": 1, "ability": "dex"})]
+    assert said == ["The rogue lands it, barely."]
+    # the tool result must be in the conversation before the narrating call
+    tool_msgs = [m for m in sent[1]["messages"] if m["role"] == "tool"]
+    assert tool_msgs and json.loads(tool_msgs[0]["content"]) == {"total": 18}
+    assert tool_msgs[0]["tool_name"] == "roll_check"
+
+
+def test_arguments_are_accepted_as_an_object_or_a_json_string(monkeypatch):
+    """Ollama sends a parsed object; some builds still send a string."""
+    _fake_ollama_chat(monkeypatch, [
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"function": {"name": "roll_check", "arguments": '{"ability": "str"}'}}]},
+        {"role": "assistant", "content": "Done."},
+    ])
+    seen = []
+    llm.OllamaToolProvider().run_turn("S", "U", TOOLS, lambda n, a: seen.append(a) or {}, lambda t: None)
+    assert seen == [{"ability": "str"}]
+
+
+def test_a_leaked_reasoning_block_is_never_read_aloud(monkeypatch):
+    """qwen3 reasons by default and it leaks into prose. Narration goes to a
+    speaker, so this is the DM saying 'Okay, the user wants me to...' out loud."""
+    _fake_ollama_chat(monkeypatch, [
+        {"role": "assistant",
+         "content": "<think>Okay, they want a goblin. Let me be vivid.</think>The goblin lunges."},
+    ])
+    said = []
+    llm.OllamaToolProvider().run_turn("S", "U", TOOLS, lambda n, a: {}, said.append)
+    assert said == ["The goblin lunges."]
+
+
+def test_thinking_is_asked_to_stay_off(monkeypatch):
+    sent = _fake_ollama_chat(monkeypatch, [{"role": "assistant", "content": "Fine."}])
+    llm.OllamaToolProvider().run_turn("S", "U", TOOLS, lambda n, a: {}, lambda t: None)
+    assert sent[0]["think"] is False
+    assert sent[0]["stream"] is False
+
+
+def test_an_ollama_error_hands_over_rather_than_crashing(monkeypatch):
+    monkeypatch.setattr(llm.requests, "post",
+                        lambda url, json=None, timeout=None: MagicMock(
+                            json=lambda: {"error": "model not found"}))
+    with pytest.raises(llm.ProviderUnavailable):
+        llm.OllamaToolProvider().run_turn("S", "U", TOOLS, lambda n, a: {}, lambda t: None)
+
+
+def test_availability_tracks_whether_the_model_is_pulled(monkeypatch):
+    monkeypatch.setattr(llm.requests, "get", MagicMock(
+        return_value=MagicMock(json=lambda: {"models": [{"name": "qwen3:4b"}]})))
+    assert llm.OllamaToolProvider().available() is True
+    assert llm.OllamaToolProvider(model="nothing:8b").available() is False
