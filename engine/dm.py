@@ -7,8 +7,11 @@ Phase 8 moved the choice of model behind engine.llm, so this file no longer know
 or cares which voice is in the DM's chair. What it still owns is the part that
 matters: the tools, the board context, and the engine that actually rolls."""
 import json
+import logging
 
 from . import character, chronicle, conditions, dice, encounter, llm, voice
+
+log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are the Dungeon Master for a live D&D 5e (SRD) tabletop session, with this app as the shared table. Players describe what their characters do in free text; you narrate outcomes and run the game.
 
@@ -513,11 +516,14 @@ def handle_player_action(character_id: int, action_text: str, socketio):
             room="campaign",
         )
         # Queued and spoken on a worker thread -- synthesis takes seconds,
-        # and nothing about the turn should wait on the speaker.
+        # and nothing about the turn should wait on the speaker. A mute DM must
+        # never cost the table its narration, so this still swallows -- but it
+        # says so, because the symptom of a swallowed failure here is silence,
+        # which looks exactly like a feature that was never wired up.
         try:
             voice.speak(text)
         except Exception:
-            pass
+            log.exception("could not queue narration for the speaker")
 
     # A fight on the board decides which tools are worth paying to send.
     # get_state already filters to status='active', so a board at all means combat.

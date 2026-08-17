@@ -24,6 +24,7 @@ Kokoro ~1.3-2.7x depending on voice. Synthesis has always run in the worker and
 never blocked a turn, which is the only reason the slower engine is affordable --
 speak() still returns immediately.
 """
+import logging
 import os
 import queue
 import re
@@ -65,6 +66,8 @@ MAX_CHARS = 800
 SYNTH_TIMEOUT = 120  # generous: long narration is ~7s, but a wedged piper must not pin the worker
 PLAY_TIMEOUT = 300
 KEEP_CLIPS = 20  # a session's recent narration; older clips are pruned as new ones land
+
+log = logging.getLogger(__name__)
 
 _queue: queue.Queue = queue.Queue()
 _worker = None
@@ -193,7 +196,10 @@ def _synthesize_kokoro(text: str, out: Path) -> bool:
         _write_wav(out, samples, sample_rate)
         return out.exists()
     except Exception:
-        # Any synthesis failure is a fallback, not a crash -- Piper is right there.
+        # Any synthesis failure is a fallback, not a crash -- Piper is right
+        # there. Logged because "the nicer voice quietly stopped being used" is
+        # otherwise indistinguishable from nothing being wrong.
+        log.exception("kokoro synthesis failed; falling back")
         return False
 
 
@@ -233,8 +239,11 @@ def _synthesize(text: str) -> Path | None:
             if engine(text, out):
                 return out
         except Exception:
-            pass
+            log.exception("%s raised", engine.__name__)
         out.unlink(missing_ok=True)
+
+    log.warning("no synthesizer could speak (engine=%s, kokoro=%s, piper=%s)",
+                TTS_ENGINE, kokoro_available(), bool(shutil.which("piper") and voice_model()))
     return None
 
 
@@ -297,8 +306,11 @@ def _run_worker():
         try:
             _deliver(text)
         except Exception:
-            # A silent table is a bad turn; a crashed worker is a broken game.
-            pass
+            # A silent table is a bad turn; a crashed worker is a broken game --
+            # so this still swallows. But it no longer swallows *quietly*: a DM
+            # that has gone mute is the hardest kind of bug to chase when the
+            # only evidence is the absence of a sound.
+            log.exception("narration failed for: %.60s", text)
         finally:
             _queue.task_done()
 
