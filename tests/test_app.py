@@ -485,3 +485,39 @@ def test_set_voice_is_room_wide():
             assert states and states[-1]["args"][0]["enabled"] is False
     finally:
         app_module.voice.set_enabled(True)
+
+
+# ---------------------------------------------------------------------------
+# The startup warning about whatever else wants Ollama
+# ---------------------------------------------------------------------------
+
+def test_a_running_rival_is_called_out_with_the_command_to_stop_it(monkeypatch):
+    """The symptom is 'the DM got slow' and the cause is invisible from inside
+    the game, so the banner has to say it."""
+    monkeypatch.setattr(app_module, "OLLAMA_RIVAL_UNITS", ["nova-cathedral.service"])
+    monkeypatch.setattr(app_module.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"stdout": "active\n"})())
+
+    warnings = app_module._ollama_rivals()
+
+    assert len(warnings) == 1
+    assert "nova-cathedral.service" in warnings[0]
+    assert "systemctl --user stop nova-cathedral.service" in warnings[0]
+    assert "systemctl --user start nova-cathedral.service" in warnings[0], \
+        "tell them how to put it back, or they won't"
+
+
+def test_nothing_is_said_when_the_rival_is_already_stopped(monkeypatch):
+    monkeypatch.setattr(app_module, "OLLAMA_RIVAL_UNITS", ["nova-cathedral.service"])
+    monkeypatch.setattr(app_module.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"stdout": "inactive\n"})())
+    assert app_module._ollama_rivals() == []
+
+
+def test_a_missing_systemctl_is_not_fatal(monkeypatch):
+    """Warning about a rival must never stop the game from starting."""
+    monkeypatch.setattr(app_module, "OLLAMA_RIVAL_UNITS", ["whatever.service"])
+    def boom(*a, **k):
+        raise OSError("no systemctl here")
+    monkeypatch.setattr(app_module.subprocess, "run", boom)
+    assert app_module._ollama_rivals() == []

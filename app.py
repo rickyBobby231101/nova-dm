@@ -433,6 +433,35 @@ def _lan_ip():
         return None
 
 
+# Other things on this machine that want Ollama. Ollama holds one model at a
+# time here (OLLAMA_MAX_LOADED_MODELS=1), so a second app asking for a different
+# model evicts ours and both sides then reload constantly. Measured cost: a turn
+# that takes 95s alone took 543s alongside nova-cathedral, with 141 model loads
+# logged in twenty minutes. Worth a line at startup, because the symptom is
+# "the DM got slow" and the cause is invisible from inside the game.
+OLLAMA_RIVAL_UNITS = os.environ.get("NOVA_DM_OLLAMA_RIVALS", "nova-cathedral.service").split(",")
+
+
+def _ollama_rivals():
+    """Warn about user services that will fight us for Ollama's model slot."""
+    warnings = []
+    for unit in (u.strip() for u in OLLAMA_RIVAL_UNITS if u.strip()):
+        try:
+            active = subprocess.run(["systemctl", "--user", "is-active", unit],
+                                    capture_output=True, timeout=5,
+                                    text=True).stdout.strip() == "active"
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if active:
+            warnings.append(
+                f"\n  ! {unit} is running and shares Ollama with the DM.\n"
+                f"    Turns will be several times slower. Stop it while you play:\n"
+                f"        systemctl --user stop {unit}\n"
+                f"    and afterwards:  systemctl --user start {unit}"
+            )
+    return warnings
+
+
 def _tailscale_address():
     """This machine's address on the tailnet, if it is on one.
 
@@ -485,5 +514,8 @@ if __name__ == "__main__":
     print(f"  join code:   {auth.join_code()}      <- share this with the players")
     print(f"  DM password: {auth.dm_password()}  <- keep this")
     print(f"  (stored in {auth.SECRETS_PATH})")
+
+    for warning in _ollama_rivals():
+        print(warning)
 
     socketio.run(app, host=host, port=port, allow_unsafe_werkzeug=True)
