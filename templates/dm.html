@@ -54,6 +54,8 @@
   select.cond-pick { font-size:11px; padding:3px; width:auto; }
   input.dur { width:46px; }
   .party-row { display:flex; align-items:center; gap:7px; font-size:12px; padding:3px 0; }
+  .roster-face { width:22px; height:22px; border-radius:5px; object-fit:cover;
+                 vertical-align:middle; margin-right:6px; border:1px solid #333848; }
 </style>
 </head>
 <body>
@@ -102,7 +104,7 @@
           {% for c in characters %}
           <label class="party-row">
             <input type="checkbox" class="party-check" value="{{ c.id }}" checked>
-            {{ c.name }} <span style="color:#9098ac">· {{ c.race|capitalize }} {{ c.class|capitalize }} {{ c.level }} · {{ c.current_hp }}/{{ c.max_hp }} HP</span>
+            {% if c.avatar %}<img class="roster-face" src="/avatar/{{ c.avatar }}" alt="">{% endif %}{{ c.name }} <span style="color:#9098ac">· {{ c.race|capitalize }} {{ c.class|capitalize }} {{ c.level }} · {{ c.current_hp }}/{{ c.max_hp }} HP{% if c.pending_asi %} · {{ c.pending_asi }} ASI point{{ 's' if c.pending_asi > 1 }}{% endif %}</span>
           </label>
           {% else %}
           <div class="empty">No characters yet.</div>

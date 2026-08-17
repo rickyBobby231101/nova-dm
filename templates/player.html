@@ -8,7 +8,8 @@
   body { font-family: system-ui, sans-serif; background:#12141a; color:#e8e8ec; margin:0; padding:16px;
          max-width:520px; margin-left:auto; margin-right:auto; }
   .sheet { background:#1b1e27; border:1px solid #2a2e3a; border-radius:12px; padding:16px; margin-bottom:14px; }
-  .name-row { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; }
+  .name-row { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .name-row h1 { flex:1; min-width:0; }
   .name-row h1 { font-size:18px; margin:0; }
   .meta { color:#9098ac; font-size:12px; }
   .hp-bar-bg { background:#12141a; border-radius:6px; height:14px; overflow:hidden; margin:8px 0; }
@@ -56,14 +57,31 @@
   #own-conditions { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
   #own-conditions .chip { font-size:10px; letter-spacing:.04em; text-transform:uppercase;
                           padding:3px 8px; border-radius:10px; background:#4a3a1c; color:#e8cf9a; }
+  .name-row .portrait { width:44px; height:44px; border-radius:10px; flex:0 0 44px;
+                        object-fit:cover; background:#12141a; border:1px solid #333848; }
+  .name-row .initials { display:flex; align-items:center; justify-content:center;
+                        font-weight:700; font-size:14px; color:#6a5cff; letter-spacing:1px; }
+  .asi-note { margin-top:8px; padding:8px 10px; border-radius:8px;
+              background:#1d1a33; border:1px solid #3a2f6b; color:#b9aaff; font-size:13px; }
 </style>
 </head>
 <body>
   <div class="sheet">
     <div class="name-row">
+      {% if character.avatar %}
+      <img class="portrait" src="/avatar/{{ character.avatar }}" alt="{{ character.name }}">
+      {% else %}
+      <span class="portrait initials">{{ character.name | initials }}</span>
+      {% endif %}
       <h1>{{ character.name }}</h1>
       <span class="meta">{{ character.race|capitalize }} {{ character.class|capitalize }}</span>
     </div>
+    {% if character.pending_asi %}
+    <!-- Said on the sheet as well as announced in the feed: an announcement
+         scrolls away, and an unspent improvement should not scroll with it. -->
+    <div class="asi-note">You have {{ character.pending_asi }} ability score
+      point{{ 's' if character.pending_asi > 1 }} to spend — tell the DM where.</div>
+    {% endif %}
     <div class="meta" id="sheet-meta">Level {{ character.level }} · XP {{ character.xp }} · AC {{ character.ac }} · Speed {{ character.speed }}ft</div>
     <div class="hp-bar-bg"><div class="hp-bar-fg" id="hp-bar" style="width:{{ (character.current_hp / character.max_hp * 100)|round|int }}%"></div></div>
     <div class="hp-text" id="hp-text">{{ character.current_hp }} / {{ character.max_hp }} HP{% if character.temp_hp %} (+{{ character.temp_hp }} temp){% endif %}</div>

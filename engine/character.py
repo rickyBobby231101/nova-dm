@@ -130,7 +130,14 @@ ADDED_COLUMNS = {
     # Improvements earned but not yet spent. On the character rather than in
     # game_state because it belongs to one character, and because an unspent
     # improvement has to survive until its player is next at the table.
-    "characters": [("pending_asi", "INTEGER NOT NULL DEFAULT 0")],
+    "characters": [
+        ("pending_asi", "INTEGER NOT NULL DEFAULT 0"),
+        # The stored filename of an uploaded portrait, or NULL for the initials
+        # fallback. Just the id -- the bytes live under engine.avatar's
+        # directory, because a database is a poor place to keep two megabytes
+        # that never need querying.
+        ("avatar", "TEXT"),
+    ],
 }
 
 

@@ -525,3 +525,53 @@ def test_an_unreachable_ollama_is_not_fatal(monkeypatch):
         raise OSError("no ollama")
     monkeypatch.setattr(app_module.requests, "get", boom)
     assert app_module._ollama_rivals() == []
+
+
+# ---------------------------------------------------------------------------
+# Portraits
+# ---------------------------------------------------------------------------
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+
+def test_a_player_can_give_their_character_a_face():
+    client, char_id = _join_and_create()
+
+    resp = client.post(f"/character/{char_id}/avatar",
+                       data={"image": (io.BytesIO(_PNG), "me.png")},
+                       content_type="multipart/form-data")
+
+    assert resp.status_code == 302
+    stored = app_module.character.get_character(char_id)["avatar"]
+    assert stored
+    assert client.get(f"/avatar/{stored}").status_code == 200
+
+
+def test_nobody_can_put_a_face_on_someone_elses_character():
+    _, char_id = _join_and_create(name="Chazel")
+    other = app_module.app.test_client()
+    other.post("/join", data={"name": "Someone Else", "join_code": auth.join_code()})
+
+    resp = other.post(f"/character/{char_id}/avatar",
+                      data={"image": (io.BytesIO(_PNG), "mine.png")},
+                      content_type="multipart/form-data")
+
+    assert resp.status_code == 302 and "/characters" in resp.headers["Location"]
+    assert app_module.character.get_character(char_id)["avatar"] is None
+
+
+def test_a_file_that_is_not_an_image_says_so_instead_of_500ing():
+    client, char_id = _join_and_create()
+
+    resp = client.post(f"/character/{char_id}/avatar",
+                       data={"image": (io.BytesIO(b"not an image at all"), "x.png")},
+                       content_type="multipart/form-data")
+
+    assert resp.status_code == 400
+    assert b"doesn&#39;t look like an image" in resp.data or b"look like an image" in resp.data
+
+
+def test_portraits_are_behind_the_join_code(client):
+    """The story is for the table, and so are their faces."""
+    resp = client.get("/avatar/" + "a" * 32 + ".png")
+    assert resp.status_code == 302

@@ -25,6 +25,7 @@ from flask_socketio import SocketIO, emit, join_room
 
 from engine import (
     auth,
+    avatar,
     backup,
     character,
     chronicle,
@@ -60,6 +61,13 @@ def _announce_narration(clip):
 
 
 voice.set_broadcast(_announce_narration)
+
+
+@app.template_filter("initials")
+def _initials(name):
+    """Two letters for a character with no picture yet. An empty circle reads as
+    broken; initials read as someone who simply hasn't chosen one."""
+    return avatar.initials(name)
 
 
 def _at_the_table() -> bool:
@@ -185,6 +193,41 @@ def import_character():
         return _render_characters(player, import_error="That file isn't text.", status=400)
 
     return redirect(url_for("play", character_id=char["id"]))
+
+
+@app.route("/character/<int:character_id>/avatar", methods=["POST"])
+def upload_avatar(character_id):
+    """A player gives their own character a face. Only their own."""
+    player = _current_player()
+    if not player:
+        return redirect(url_for("join"))
+    char = character.get_character(character_id)
+    if not char or char["player_id"] != player["id"]:
+        return redirect(url_for("characters"))
+
+    upload = request.files.get("image")
+    blob = upload.read() if upload and upload.filename else b""
+    try:
+        avatar.set_for_character(character_id, blob)
+    except avatar.AvatarError as e:
+        # Choosing the wrong file is a normal thing to do on a phone -- say what
+        # was wrong on the page rather than handing back a 400 and no advice.
+        return _render_characters(player, import_error=str(e), status=400)
+
+    socketio.emit("sheet_update", {"character": character.get_character(character_id)},
+                  room=CAMPAIGN_ROOM)
+    return redirect(url_for("characters"))
+
+
+@app.route("/avatar/<avatar_id>")
+@requires_table
+def avatar_image(avatar_id):
+    """Serve a portrait. avatar.path accepts only names it generated itself, so
+    an id arriving from a URL cannot walk out of the directory."""
+    found = avatar.path(avatar_id)
+    if found is None:
+        return jsonify({"error": "not found"}), 404
+    return send_file(found, mimetype=avatar.mimetype(avatar_id), conditional=True)
 
 
 @app.route("/play")

@@ -31,6 +31,19 @@
   .error { background:#3a1f22; border:1px solid #a33; color:#ffb3b3; border-radius:8px;
            padding:10px 12px; font-size:13px; margin-top:20px; }
   .hint { color:#6a6f80; font-size:11px; margin:-6px 0 12px; }
+  .char-link { display:flex; align-items:center; gap:12px; text-decoration:none; }
+  .portrait { width:48px; height:48px; border-radius:10px; flex:0 0 48px;
+              object-fit:cover; background:#12141a; border:1px solid #333848; }
+  .initials { display:flex; align-items:center; justify-content:center;
+              font-weight:700; font-size:15px; color:#6a5cff; letter-spacing:1px; }
+  .char-text { display:flex; flex-direction:column; gap:3px; min-width:0; }
+  .char-actions { display:flex; align-items:center; gap:10px; margin-top:10px; }
+  .char-actions form { margin:0; }
+  .mini-btn { display:inline-block; cursor:pointer; font-size:11px; font-weight:700;
+              letter-spacing:1px; color:#9098ac; border:1px solid #333848;
+              border-radius:6px; padding:6px 10px; }
+  .mini-btn:active { background:#232733; }
+  .asi { color:#6a5cff; }
 </style>
 </head>
 <body>
@@ -39,11 +52,28 @@
 
   {% for c in characters %}
   <div class="char-card">
-    <a href="/play?character_id={{ c.id }}">
-      <div class="char-name">{{ c.name }}</div>
-      <div class="char-meta">{{ c.race|capitalize }} {{ c.class|capitalize }} · Level {{ c.level }} · {{ c.current_hp }}/{{ c.max_hp }} HP</div>
+    <a href="/play?character_id={{ c.id }}" class="char-link">
+      {% if c.avatar %}
+      <img class="portrait" src="/avatar/{{ c.avatar }}" alt="{{ c.name }}">
+      {% else %}
+      <span class="portrait initials">{{ c.name | initials }}</span>
+      {% endif %}
+      <span class="char-text">
+        <span class="char-name">{{ c.name }}</span>
+        <span class="char-meta">{{ c.race|capitalize }} {{ c.class|capitalize }} · Level {{ c.level }} · {{ c.current_hp }}/{{ c.max_hp }} HP{% if c.pending_asi %} · <b class="asi">{{ c.pending_asi }} ability point{{ 's' if c.pending_asi > 1 }} to spend</b>{% endif %}</span>
+      </span>
     </a>
-    <a class="export" href="/character/{{ c.id }}/export" title="Download this character as JSON">EXPORT</a>
+    <div class="char-actions">
+      <!-- capture="user" is deliberately absent: most people want a picture
+           they already have, not to take one at the table. -->
+      <form method="post" action="/character/{{ c.id }}/avatar" enctype="multipart/form-data">
+        <label class="mini-btn">
+          {{ 'CHANGE PICTURE' if c.avatar else 'ADD PICTURE' }}
+          <input type="file" name="image" accept="image/*" onchange="this.form.submit()" hidden>
+        </label>
+      </form>
+      <a class="export" href="/character/{{ c.id }}/export" title="Download this character as JSON">EXPORT</a>
+    </div>
   </div>
   {% else %}
   <div class="sub">No characters yet.</div>
