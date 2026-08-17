@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>nova-dm</title>
+<title>nova-dm — DM</title>
 <style>
   body { font-family: system-ui, sans-serif; background:#12141a; color:#e8e8ec;
          display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
@@ -12,29 +12,23 @@
   h1 { font-size:20px; margin:0 0 6px; }
   p { color:#9098ac; font-size:13px; margin:0 0 20px; }
   input { width:100%; box-sizing:border-box; padding:12px; border-radius:8px; border:1px solid #333848;
-          background:#12141a; color:#e8e8ec; font-size:16px; margin-bottom:14px; }
+          background:#12141a; color:#e8e8ec; font-size:16px; margin-bottom:14px;
+          text-align:center; letter-spacing:3px; font-weight:600; }
   button { width:100%; padding:12px; border-radius:8px; border:none; background:#6a5cff;
            color:white; font-size:15px; font-weight:600; cursor:pointer; }
   button:active { background:#5847e0; }
-  .code { text-transform:uppercase; letter-spacing:3px; text-align:center; font-weight:600; }
   .error { color:#ff8080; font-size:13px; margin:0 0 14px; }
 </style>
 </head>
 <body>
   <div class="card">
-    <h1>Enter the Campaign</h1>
-    <p>{% if need_code %}Your name, and the code the DM gave you.{% else %}What should we call you?{% endif %}</p>
+    <h1>The DM's Chair</h1>
+    <p>This isn't the join code. It's the other one.</p>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <form method="post" action="/join">
-      <input type="text" name="name" placeholder="Your name" value="{{ name or '' }}"
-             autofocus required maxlength="40">
-      {% if need_code %}
-      <!-- autocapitalize/autocorrect off: this gets typed on a phone while being
-           read out over a call, and a helpful keyboard turns K7QM into K7 Qm. -->
-      <input type="text" name="join_code" class="code" placeholder="JOIN CODE" required
-             maxlength="12" autocapitalize="characters" autocorrect="off" spellcheck="false">
-      {% endif %}
-      <button type="submit">JOIN</button>
+    <form method="post" action="/dm">
+      <input type="password" name="dm_password" placeholder="DM PASSWORD" autofocus required
+             maxlength="24" autocapitalize="characters" autocorrect="off" spellcheck="false">
+      <button type="submit">TAKE THE CHAIR</button>
     </form>
   </div>
 </body>

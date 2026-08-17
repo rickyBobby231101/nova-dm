@@ -2,6 +2,7 @@
 no DM/LLM pipeline yet (that's Phase 3); the action box in player.html exists
 but isn't wired to anything. This phase proves the multiplayer plumbing works
 via a real live-sync round trip: roll a check, every connected device sees it."""
+import functools
 import json
 import socket as _socket
 
@@ -13,14 +14,18 @@ from flask import (
     render_template,
     request,
     send_file,
+    session,
     url_for,
 )
 from flask_socketio import SocketIO, emit, join_room
 
-from engine import character, chronicle, conditions, dice, dm, encounter, portable, voice
+from engine import auth, character, chronicle, conditions, dice, dm, encounter, portable, voice
 
 app = Flask(__name__)
-app.secret_key = "nova-dm-lan-only"  # LAN-only, no real auth in scope -- see plan
+# Persisted outside the repo and generated on first run. The old hardcoded key
+# was fine while nothing but the living room could reach this; it is not fine
+# now that the session cookie is the only thing saying who the DM is.
+app.secret_key = auth.secret_key()
 socketio = SocketIO(app, async_mode="threading")
 
 CAMPAIGN_ROOM = "campaign"  # one shared campaign for now -- multi-campaign is out of scope
@@ -38,18 +43,40 @@ def _announce_narration(clip):
 voice.set_broadcast(_announce_narration)
 
 
+def _at_the_table() -> bool:
+    """Has this browser given the join code? Held in the signed session, so it
+    cannot be set by anyone who does not know the secret key."""
+    return bool(session.get("at_the_table"))
+
+
+def _is_dm() -> bool:
+    return bool(session.get("is_dm"))
+
+
 def _current_player():
+    if not _at_the_table():
+        return None
     token = request.cookies.get("session_token")
     if not token:
         return None
     return character.get_player_by_token(token)
 
 
+def requires_table(view):
+    """Everything about the campaign is behind the join code."""
+    @functools.wraps(view)
+    def wrapper(*args, **kwargs):
+        if not _at_the_table():
+            return redirect(url_for("join"))
+        return view(*args, **kwargs)
+    return wrapper
+
+
 @app.route("/")
 def join():
     if _current_player():
         return redirect(url_for("characters"))
-    return render_template("join.html")
+    return render_template("join.html", need_code=not _at_the_table())
 
 
 @app.route("/join", methods=["POST"])
@@ -57,6 +84,17 @@ def do_join():
     name = request.form.get("name", "").strip()
     if not name:
         return redirect(url_for("join"))
+
+    # An already-seated browser doesn't re-enter the code to make a second
+    # character; a new one always does.
+    if not _at_the_table():
+        if not auth.check_join_code(request.form.get("join_code", "")):
+            return render_template("join.html", need_code=True,
+                                   error="That join code isn't right.",
+                                   name=name), 403
+        session["at_the_table"] = True
+        session.permanent = True
+
     player = character.create_player(name)
     resp = make_response(redirect(url_for("characters")))
     resp.set_cookie("session_token", player["session_token"], max_age=60 * 60 * 24 * 30)
@@ -142,10 +180,24 @@ def play():
     return render_template("player.html", player=player, character=char)
 
 
-@app.route("/dm")
+@app.route("/dm", methods=["GET", "POST"])
 def dm_screen():
-    # Open on the LAN, same as everything else here -- whoever is running the game
-    # opens this page. No auth, deliberately: see the note on app.secret_key.
+    """The DM's chair is behind its own password.
+
+    Separate from the join code on purpose: sitting at the table shouldn't hand
+    someone the board. A player who knows the join code still can't start
+    encounters, deal damage, or hand out levels.
+    """
+    if request.method == "POST" and not _is_dm():
+        if not auth.check_dm_password(request.form.get("dm_password", "")):
+            return render_template("dm_login.html", error="Wrong password."), 403
+        session["is_dm"] = True
+        session.permanent = True
+        return redirect(url_for("dm_screen"))
+
+    if not _is_dm():
+        return render_template("dm_login.html")
+
     return render_template("dm.html", encounter=encounter.get_state(),
                           characters=character.list_active_characters(),
                           conditions=encounter.list_conditions(),
@@ -153,11 +205,13 @@ def dm_screen():
 
 
 @app.route("/narration/<clip_id>.wav")
+@requires_table
 def narration_clip(clip_id):
     """Serve one synthesized clip to whichever devices were told about it.
 
     voice.clip_path refuses anything that isn't one of its own hex names, so a
-    crafted id can't walk out of the clip directory.
+    crafted id can't walk out of the clip directory. Behind the join code too --
+    narration is the story, and the story is for the table.
     """
     path = voice.clip_path(clip_id)
     if path is None:
@@ -166,11 +220,13 @@ def narration_clip(clip_id):
 
 
 @app.route("/api/encounter")
+@requires_table
 def api_encounter():
     return jsonify({"encounter": encounter.get_state()})
 
 
 @app.route("/api/character/<int:character_id>")
+@requires_table
 def api_character(character_id):
     char = character.get_character(character_id)
     if not char:
@@ -178,14 +234,36 @@ def api_character(character_id):
     return jsonify(char)
 
 
+def dm_only(handler):
+    """Guard for the events that run the game rather than play in it.
+
+    Gating /dm alone would have been theatre: the page is just buttons, and every
+    button is a socket event any connected client can emit. This is where the
+    DM's authority actually lives.
+    """
+    @functools.wraps(handler)
+    def wrapper(*args, **kwargs):
+        if not _is_dm():
+            emit("dm_denied", {"event": handler.__name__})
+            return None
+        return handler(*args, **kwargs)
+    return wrapper
+
+
 @socketio.on("connect")
 def on_connect():
+    # Refusing the connection outright, rather than letting it sit in the room
+    # ignored: an unauthenticated socket should not receive campaign broadcasts.
+    if not _at_the_table():
+        return False
+
     join_room(CAMPAIGN_ROOM)
     # A device joining mid-session needs the current state of the shared speaker
     # and whatever fight is already underway.
     emit("voice_state", {"enabled": voice.is_enabled(), "available": voice.available(),
                          "sink": voice.sink()})
     emit("encounter_update", {"encounter": encounter.get_state()})
+    return None
 
 
 @socketio.on("roll_request")
@@ -233,6 +311,7 @@ def on_monster_search(data):
 
 
 @socketio.on("dm_start_encounter")
+@dm_only
 def on_dm_start_encounter(data):
     state = encounter.start_encounter(
         data.get("name") or "Encounter",
@@ -247,6 +326,7 @@ def on_dm_start_encounter(data):
 
 
 @socketio.on("dm_damage")
+@dm_only
 def on_dm_damage(data):
     result = encounter.damage_combatant(data.get("combatant_id"), data.get("amount", 0))
     if "error" not in result:
@@ -255,6 +335,7 @@ def on_dm_damage(data):
 
 
 @socketio.on("dm_heal")
+@dm_only
 def on_dm_heal(data):
     result = encounter.heal_combatant(data.get("combatant_id"), data.get("amount", 0))
     if "error" not in result:
@@ -263,6 +344,7 @@ def on_dm_heal(data):
 
 
 @socketio.on("dm_condition")
+@dm_only
 def on_dm_condition(data):
     if data.get("apply"):
         result = encounter.apply_condition(
@@ -283,6 +365,7 @@ def on_dm_condition(data):
 
 
 @socketio.on("dm_next_turn")
+@dm_only
 def on_dm_next_turn():
     state = encounter.advance_turn()
     if state:
@@ -298,6 +381,7 @@ def on_dm_next_turn():
 
 
 @socketio.on("dm_end_encounter")
+@dm_only
 def on_dm_end_encounter():
     # Counted before the fight closes -- ending it clears the board this reads.
     award = encounter.victory_xp()
@@ -311,6 +395,7 @@ def on_dm_end_encounter():
 
 
 @socketio.on("dm_award_xp")
+@dm_only
 def on_dm_award_xp(data):
     """The human DM's manual grant. Goes through the same path as the AI DM's
     tool, so a level-up earned this way is announced identically."""
@@ -347,6 +432,12 @@ def _lan_ip():
 
 if __name__ == "__main__":
     ip = _lan_ip()
+    # The codes are printed every start, not just the first: they live in a file
+    # nobody is going to go looking for, and the DM needs to read the join code
+    # out loud at the top of a session.
     print("nova-dm running: http://localhost:5050" +
           (f"  (LAN: http://{ip}:5050)" if ip else ""))
+    print(f"  join code:   {auth.join_code()}      <- share this with the players")
+    print(f"  DM password: {auth.dm_password()}  <- keep this")
+    print(f"  (stored in {auth.SECRETS_PATH})")
     socketio.run(app, host="0.0.0.0", port=5050, allow_unsafe_werkzeug=True)

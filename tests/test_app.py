@@ -8,7 +8,7 @@ from flask_socketio import SocketIOTestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import app as app_module
-from engine import character
+from engine import auth, character
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(character.SRD_DB_PATH),
@@ -32,7 +32,26 @@ def client():
 
 
 def _join(client, name="Chazel"):
-    return client.post("/join", data={"name": name})
+    return client.post("/join", data={"name": name, "join_code": auth.join_code()})
+
+
+def _become_dm(client):
+    return client.post("/dm", data={"dm_password": auth.dm_password()})
+
+
+def _socket_client():
+    """A socket only connects for a browser that has given the join code."""
+    client = app_module.app.test_client()
+    _join(client)
+    return SocketIOTestClient(app_module.app, app_module.socketio, flask_test_client=client)
+
+
+def _dm_socket_client():
+    """...and dm_* events additionally need the DM password."""
+    client = app_module.app.test_client()
+    _join(client)
+    _become_dm(client)
+    return SocketIOTestClient(app_module.app, app_module.socketio, flask_test_client=client)
 
 
 def _create_character(client, name="Thorin"):
@@ -78,7 +97,7 @@ def test_play_page_rejects_other_players_character(client):
 
     # a second player, different cookie jar (fresh client), should not see it
     other = app_module.app.test_client()
-    other.post("/join", data={"name": "Someone Else"})
+    other.post("/join", data={"name": "Someone Else", "join_code": auth.join_code()})
     resp2 = other.get(f"/play?character_id={char_id}")
     assert resp2.status_code == 302
     assert resp2.headers["Location"].endswith("/characters")
@@ -86,14 +105,14 @@ def test_play_page_rejects_other_players_character(client):
 
 def test_roll_request_broadcasts_roll_result_and_logs_it():
     _join_resp = app_module.app.test_client()
-    _join_resp.post("/join", data={"name": "Chazel"})
+    _join_resp.post("/join", data={"name": "Chazel", "join_code": auth.join_code()})
     create_resp = _join_resp.post("/characters", data={
         "name": "Mira", "race": "human", "class": "cleric",
         "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
     })
     char_id = int(create_resp.headers["Location"].rsplit("=", 1)[1])
 
-    socket_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    socket_client = _socket_client()
     assert socket_client.is_connected()
     socket_client.emit("roll_request", {"character_id": char_id, "ability": "wis", "proficient": True})
     received = socket_client.get_received()
@@ -115,7 +134,7 @@ def test_roll_request_broadcasts_roll_result_and_logs_it():
 
 def _join_and_create(name="Chazel", char_name="Mira", race="dwarf"):
     client = app_module.app.test_client()
-    client.post("/join", data={"name": name})
+    client.post("/join", data={"name": name, "join_code": auth.join_code()})
     resp = client.post("/characters", data={
         "name": char_name, "race": race, "class": "cleric",
         "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
@@ -139,7 +158,7 @@ def test_export_route_offers_a_download():
 def test_export_refuses_someone_elses_character():
     _, char_id = _join_and_create(name="Chazel", char_name="Mira")
     other = app_module.app.test_client()
-    other.post("/join", data={"name": "Someone Else"})
+    other.post("/join", data={"name": "Someone Else", "join_code": auth.join_code()})
 
     resp = other.get(f"/character/{char_id}/export")
 
@@ -152,7 +171,7 @@ def test_pasted_export_imports_and_lands_in_play():
     blob = client.get(f"/character/{char_id}/export").get_data(as_text=True)
 
     importer = app_module.app.test_client()
-    importer.post("/join", data={"name": "Second Table"})
+    importer.post("/join", data={"name": "Second Table", "join_code": auth.join_code()})
     resp = importer.post("/characters/import", data={"pasted": blob})
 
     assert resp.status_code == 302
@@ -170,7 +189,7 @@ def test_uploaded_file_imports():
     blob = client.get(f"/character/{char_id}/export").get_data()
 
     importer = app_module.app.test_client()
-    importer.post("/join", data={"name": "Third Table"})
+    importer.post("/join", data={"name": "Third Table", "join_code": auth.join_code()})
     resp = importer.post(
         "/characters/import",
         data={"file": (io.BytesIO(blob), "mira.nova-dm.json")},
@@ -191,25 +210,90 @@ def test_bad_paste_shows_a_message_instead_of_a_500():
     assert b"IMPORT A CHARACTER" in resp.data, "should re-render the page, not a bare error"
 
 
-def test_dm_screen_renders():
-    resp = app_module.app.test_client().get("/dm")
+def test_dm_screen_renders_once_the_password_is_given():
+    client = app_module.app.test_client()
+    _become_dm(client)
+    resp = client.get("/dm")
     assert resp.status_code == 200
     assert b"DM Screen" in resp.data
+
+
+# --------------------------------------------------------------------------
+# Phase 11: the door, and the second door behind it
+# --------------------------------------------------------------------------
+
+def test_join_needs_the_code(client):
+    resp = client.post("/join", data={"name": "Gatecrasher", "join_code": "WRONG1"})
+
+    assert resp.status_code == 403
+    assert b"join code isn" in resp.data
+    assert "session_token" not in resp.headers.get("Set-Cookie", "")
+
+
+def test_join_code_is_forgiving_about_case_and_spacing(client):
+    code = auth.join_code()
+    resp = client.post("/join", data={"name": "Chazel",
+                                      "join_code": f" {code.lower()[:3]}-{code.lower()[3:]} "})
+
+    assert resp.status_code == 302, "a code read aloud and retyped should still work"
+
+
+def test_campaign_pages_are_closed_before_the_code(client):
+    """Not merely unlinked -- actually closed."""
+    for path in ["/characters", "/play?character_id=1", "/api/encounter",
+                 "/narration/" + "a" * 32 + ".wav"]:
+        resp = client.get(path)
+        assert resp.status_code == 302, f"{path} was reachable without the join code"
+
+
+def test_socket_refuses_a_browser_that_never_joined():
+    """An unauthenticated socket must not sit in the room collecting broadcasts."""
+    stranger = SocketIOTestClient(app_module.app, app_module.socketio,
+                                  flask_test_client=app_module.app.test_client())
+    assert not stranger.is_connected()
+
+
+def test_dm_screen_is_not_reachable_with_only_the_join_code(client):
+    _join(client)
+    resp = client.get("/dm")
+
+    assert b"DM Screen" not in resp.data
+    assert b"TAKE THE CHAIR" in resp.data
+
+
+def test_wrong_dm_password_is_refused(client):
+    resp = client.post("/dm", data={"dm_password": "NOPE"})
+
+    assert resp.status_code == 403
+    assert b"DM Screen" not in resp.data
+
+
+def test_a_player_cannot_drive_the_dm_events():
+    """The DM screen is only buttons; this is where the authority actually is.
+    A player who knows the join code must not be able to award themselves levels."""
+    player = _socket_client()  # joined, but never gave the DM password
+    player.get_received()
+
+    player.emit("dm_award_xp", {"amount": 10000})
+
+    events = [r["name"] for r in player.get_received()]
+    assert "dm_denied" in events
+    assert "campaign_event" not in events, "a player awarded themselves XP"
 
 
 def test_dm_can_run_a_fight_over_sockets():
     """The human DM's controls and the players' view are the same round trip: one
     encounter_update payload broadcast to the room."""
     player = app_module.app.test_client()
-    player.post("/join", data={"name": "Chazel"})
+    player.post("/join", data={"name": "Chazel", "join_code": auth.join_code()})
     create = player.post("/characters", data={
         "name": "Mira", "race": "human", "class": "cleric",
         "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
     })
     char_id = int(create.headers["Location"].rsplit("=", 1)[1])
 
-    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
-    player_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client = _dm_socket_client()
+    player_client = _socket_client()
     dm_client.get_received()
     player_client.get_received()
 
@@ -245,15 +329,15 @@ def test_dm_can_award_xp_over_sockets_and_the_sheet_follows():
     """The human DM's grant travels the same path as the AI DM's tool, and the
     player's device is told to move its sheet without a refresh."""
     player = app_module.app.test_client()
-    player.post("/join", data={"name": "Chazel"})
+    player.post("/join", data={"name": "Chazel", "join_code": auth.join_code()})
     create = player.post("/characters", data={
         "name": "Mira", "race": "human", "class": "cleric",
         "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
     })
     char_id = int(create.headers["Location"].rsplit("=", 1)[1])
 
-    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
-    player_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client = _dm_socket_client()
+    player_client = _socket_client()
     dm_client.get_received()
     player_client.get_received()
 
@@ -276,8 +360,8 @@ def test_dm_can_award_xp_over_sockets_and_the_sheet_follows():
 
 
 def test_dm_award_xp_ignores_an_empty_amount():
-    app_module.app.test_client().post("/join", data={"name": "Chazel"})
-    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    app_module.app.test_client().post("/join", data={"name": "Chazel", "join_code": auth.join_code()})
+    dm_client = _dm_socket_client()
     dm_client.get_received()
 
     dm_client.emit("dm_award_xp", {"amount": 0})
@@ -286,14 +370,14 @@ def test_dm_award_xp_ignores_an_empty_amount():
 
 def test_dm_can_apply_and_clear_a_condition_over_sockets():
     player = app_module.app.test_client()
-    player.post("/join", data={"name": "Chazel"})
+    player.post("/join", data={"name": "Chazel", "join_code": auth.join_code()})
     create = player.post("/characters", data={
         "name": "Mira", "race": "human", "class": "cleric",
         "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
     })
     char_id = int(create.headers["Location"].rsplit("=", 1)[1])
 
-    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client = _dm_socket_client()
     dm_client.get_received()
     dm_client.emit("dm_start_encounter",
                    {"name": "Ambush", "monsters": [{"slug": "goblin", "count": 1}],
@@ -313,7 +397,7 @@ def test_dm_can_apply_and_clear_a_condition_over_sockets():
 
 
 def test_a_timed_condition_counts_down_and_is_announced_when_it_ends():
-    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client = _dm_socket_client()
     dm_client.get_received()
     dm_client.emit("dm_start_encounter",
                    {"name": "Ambush", "monsters": [{"slug": "goblin", "count": 1}],
@@ -338,7 +422,7 @@ def test_a_timed_condition_counts_down_and_is_announced_when_it_ends():
 
 
 def test_immunity_refusal_is_announced_to_the_table():
-    dm_client = SocketIOTestClient(app_module.app, app_module.socketio)
+    dm_client = _dm_socket_client()
     dm_client.get_received()
     dm_client.emit("dm_start_encounter",
                    {"name": "Deep", "monsters": [{"slug": "aboleth-nihilith", "count": 1}],
@@ -357,7 +441,7 @@ def test_immunity_refusal_is_announced_to_the_table():
 def test_a_poisoned_character_rolls_checks_at_disadvantage():
     """The player doesn't have to remember -- the server applies it."""
     player = app_module.app.test_client()
-    player.post("/join", data={"name": "Chazel"})
+    player.post("/join", data={"name": "Chazel", "join_code": auth.join_code()})
     create = player.post("/characters", data={
         "name": "Mira", "race": "human", "class": "cleric",
         "str": "10", "dex": "12", "con": "13", "int": "10", "wis": "15", "cha": "10",
@@ -367,7 +451,7 @@ def test_a_poisoned_character_rolls_checks_at_disadvantage():
         con.execute("UPDATE characters SET conditions_json=? WHERE id=?",
                     ('[{"name": "poisoned"}]', char_id))
 
-    client = SocketIOTestClient(app_module.app, app_module.socketio)
+    client = _socket_client()
     client.get_received()
     client.emit("roll_request", {"character_id": char_id, "ability": "wis", "proficient": True})
 
@@ -377,7 +461,7 @@ def test_a_poisoned_character_rolls_checks_at_disadvantage():
 
 
 def test_monster_search_returns_srd_matches():
-    client = SocketIOTestClient(app_module.app, app_module.socketio)
+    client = _socket_client()
     client.get_received()
     client.emit("monster_search", {"query": "goblin"})
     results = [r for r in client.get_received() if r["name"] == "monster_results"][-1]
@@ -388,8 +472,8 @@ def test_set_voice_is_room_wide():
     """The speaker is the server box, so muting from one phone has to mute the
     room and update every other device's toggle."""
     try:
-        one = SocketIOTestClient(app_module.app, app_module.socketio)
-        two = SocketIOTestClient(app_module.app, app_module.socketio)
+        one = _socket_client()
+        two = _socket_client()
         one.get_received()
         two.get_received()
 
