@@ -631,3 +631,32 @@ def test_availability_tracks_whether_the_model_is_pulled(monkeypatch):
         return_value=MagicMock(json=lambda: {"models": [{"name": "qwen3:4b"}]})))
     assert llm.OllamaToolProvider().available() is True
     assert llm.OllamaToolProvider(model="nothing:8b").available() is False
+
+
+def test_tool_signatures_name_each_tool_s_arguments():
+    """The tool *descriptions* say what a tool is for and never what it takes,
+    and the flat schema offers every property to every intent -- so without this
+    a small model names the right tool and fills in an argument belonging to a
+    different one."""
+    sig = llm.tool_signatures(TOOLS)
+    assert "roll_check(character_id, ability)" in sig
+    assert "roll_dice(expr)" in sig
+
+
+def test_optional_arguments_are_marked_as_optional():
+    tools = [{
+        "name": "award_xp", "description": "d",
+        "input_schema": {"type": "object",
+                         "properties": {"amount": {}, "reason": {}},
+                         "required": ["amount"]},
+    }]
+    assert "award_xp(amount, [reason])" in llm.tool_signatures(tools)
+
+
+def test_signatures_are_sent_with_the_intent_pass(monkeypatch):
+    """Generated from the schema rather than written by hand, so they cannot
+    drift from what intent_to_call actually enforces."""
+    sent = _fake_ollama(monkeypatch, [{"intents": []}, {"narration": "Nothing stirs."}])
+    llm.OllamaProvider().run_turn("SYSTEM", "I pick the lock.", TOOLS,
+                                  lambda n, a: {}, lambda t: None)
+    assert "roll_dice(expr)" in sent[0]["messages"][0]["content"]

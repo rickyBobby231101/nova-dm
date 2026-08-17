@@ -602,7 +602,7 @@ class OllamaProvider:
         by_name = {t["name"]: t for t in tools}
 
         plan = self._chat(
-            system + "\n" + INTENT_INSTRUCTIONS,
+            system + "\n" + INTENT_INSTRUCTIONS + tool_signatures(tools),
             user_message + "\n\nWhich tools must the engine run?",
             intent_schema(tools),
         )
@@ -634,6 +634,31 @@ class OllamaProvider:
         narration = (told.get("narration") or "").strip()
         if narration:
             emit(narration)
+
+
+def tool_signatures(tools):
+    """One line per tool naming its arguments, e.g. `roll_dice(expr)`.
+
+    The flat schema below deliberately offers every tool's properties to every
+    intent, and marks only `tool` as required -- which leaves a small model free
+    to name the right tool and then fill in a plausible-looking argument
+    belonging to a different one. Observed exactly that: llama3.2 asked for
+    roll_dice and supplied `name`, which start_encounter owns, so the intent was
+    dropped as malformed and the lock was never rolled for.
+
+    The tool descriptions say what each tool is for but never what it takes, so
+    this is the only place the model is told. Cheap at roughly sixty tokens, and
+    generated from the schema so it cannot drift away from what is enforced.
+    """
+    lines = []
+    for tool in tools:
+        schema = tool["input_schema"]
+        required = schema.get("required", [])
+        optional = [k for k in schema.get("properties", {}) if k not in required]
+        args = ", ".join(required + [f"[{k}]" for k in optional])
+        lines.append(f"  {tool['name']}({args})")
+    return ("\nEach tool takes exactly these arguments, and square brackets mark the "
+            "optional ones. Use no others:\n" + "\n".join(lines) + "\n")
 
 
 def intent_schema(tools):
