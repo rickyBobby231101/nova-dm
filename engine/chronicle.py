@@ -26,6 +26,9 @@ from . import character
 
 SCENE_KEY = "scene"
 CHRONICLE_KEY = "chronicle"
+# Owned by engine.campaign, read here. Named in both places rather than imported,
+# because campaign imports this module and the cycle is not worth the tidiness.
+PREMISE_KEY = "premise"
 
 # What the DM needs to recall is the story, not the arithmetic. Rolls, damage
 # and healing are deliberately left out: the board and the sheets already carry
@@ -34,7 +37,10 @@ CHRONICLE_KEY = "chronicle"
 NARRATIVE_KINDS = ("action", "dm", "encounter", "level_up", "xp")
 
 DEFAULT_LIMIT = 20
-DEFAULT_BUDGET = 3000
+# Trimmed from 3000 to pay for the premise now sitting above it. The log tail is
+# the cheapest thing here to shorten: the chronicle already carries what mattered
+# from the events that scroll off, which is the whole reason it exists.
+DEFAULT_BUDGET = 2000
 
 
 def get_value(key: str, default: str = "") -> str:
@@ -107,6 +113,13 @@ def _trim(lines: list, budget: int) -> list:
 def context_block(limit: int = DEFAULT_LIMIT, budget: int = DEFAULT_BUDGET) -> str:
     """The memory half of the DM's prompt, or empty on a brand new campaign."""
     sections = []
+
+    # First, and never trimmed. The premise is not history -- it is the standing
+    # situation, as true on turn two hundred as on turn one, and trimming it away
+    # like an old log line would quietly return the DM to knowing nothing.
+    premise = get_value(PREMISE_KEY)
+    if premise:
+        sections.append("The situation:\n" + premise)
 
     chronicle = get_chronicle()
     if chronicle:

@@ -510,3 +510,31 @@ def test_the_prompt_is_split_without_losing_a_rule():
 def test_the_narration_pass_is_much_cheaper_than_the_planning_pass():
     """The whole reason a slower, better model can afford to write the prose."""
     assert len(dm.NARRATION_PROMPT) < len(dm.PLANNING_PROMPT) * 0.75
+
+
+def test_the_seeded_world_reaches_the_narration_pass_but_not_the_planning_pass(monkeypatch):
+    """Deciding which dice to roll does not depend on how Zorya talks, and on
+    the two-pass path the narration prompt is sent once while the context is
+    sent twice -- so colour belongs here and nowhere else."""
+    monkeypatch.setattr(dm.campaign, "flavour_block",
+                        lambda: "Who is in this world:\n- Zorya - a cat.")
+
+    suffix = dm._flavour_suffix()
+
+    assert "Zorya" in suffix
+    assert "Zorya" not in dm.PLANNING_PROMPT
+    assert "Zorya" in dm.NARRATION_PROMPT + suffix
+
+
+def test_an_unseeded_campaign_pays_nothing_for_flavour(monkeypatch):
+    monkeypatch.setattr(dm.campaign, "flavour_block", lambda: "")
+    assert dm._flavour_suffix() == ""
+
+
+def test_players_are_not_shown_the_database_column_name():
+    """The column is int_ because int is a builtin. Players were seeing
+    'Chazel rolls INT_: 20+0=20'."""
+    from engine import rules
+    assert rules.ability_label("int_") == "INT"
+    assert rules.ability_label("int") == "INT"
+    assert rules.ability_label("dex") == "DEX"

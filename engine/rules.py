@@ -17,6 +17,15 @@ CR_XP = {
 }
 
 
+def ability_label(ability: str) -> str:
+    """What a player should see for an ability key.
+
+    The column is `int_` because `int` is a builtin, which is a Python problem
+    and not the table's -- players were being shown "Chazel rolls INT_".
+    """
+    return {"int_": "INT", "int": "INT"}.get((ability or "").lower(), (ability or "").upper())
+
+
 def ability_mod(score: int) -> int:
     return (score - 10) // 2
 

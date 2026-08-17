@@ -9,7 +9,7 @@ matters: the tools, the board context, and the engine that actually rolls."""
 import json
 import logging
 
-from . import character, chronicle, conditions, dice, encounter, llm, voice
+from . import campaign, character, chronicle, conditions, dice, encounter, llm, rules, voice
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,16 @@ Writing the turn:
 - Several characters may be at the table; you may involve any of them narratively.
 - Never announce an XP total and never tell a player they have levelled. The engine reports both. If it announces a level-up, weave it into the story.
 """
+
+def _flavour_suffix() -> str:
+    """The seeded world's cast and adversary, or nothing at all.
+
+    Read per turn rather than baked in at import, so re-seeding a campaign takes
+    effect on the next action instead of needing a restart.
+    """
+    flavour = campaign.flavour_block()
+    return "\n" + flavour + "\n" if flavour else ""
+
 
 # The tool path gets everything: it decides and narrates in one conversation.
 SYSTEM_PROMPT = _IDENTITY + _MECHANICS + _PROSE
@@ -379,7 +389,7 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
             adv=adv,
         )
         advtag = f" ({result['adv']})" if result["adv"] else ""
-        text = f"{char['name']} rolls {tool_input['ability'].upper()}{advtag}: {result['d20']}+{result['modifier']}={result['total']}"
+        text = f"{char['name']} rolls {rules.ability_label(tool_input['ability'])}{advtag}: {result['d20']}+{result['modifier']}={result['total']}"
         character.log_campaign_event("roll", char["name"], text)
         socketio.emit("campaign_event", {"text": text, "kind": "roll"}, room="campaign")
         return result
@@ -549,7 +559,9 @@ def handle_player_action(character_id: int, action_text: str, socketio):
 
     try:
         outcome = llm.run_turn(
-            SYSTEM_PROMPT,
+            # A one-conversation provider decides and narrates from this single
+            # string, so it needs the world too.
+            SYSTEM_PROMPT + _flavour_suffix(),
             prompt,
             tools_for(in_combat),
             lambda name, tool_input: _execute_tool(name, tool_input, socketio),
@@ -563,7 +575,12 @@ def handle_player_action(character_id: int, action_text: str, socketio):
             # The two-pass path asks two different questions; each gets only the
             # rules it can act on. A provider that decides and narrates in one
             # conversation ignores these and keeps SYSTEM_PROMPT whole.
-            prompts={"planning": PLANNING_PROMPT, "narration": NARRATION_PROMPT},
+            # The world's cast and its adversary ride with the narration pass
+            # only. Deciding which dice to roll does not depend on how Zorya
+            # talks, and on the two-pass path this prompt is sent once while the
+            # context is sent twice -- so colour is half price here.
+            prompts={"planning": PLANNING_PROMPT,
+                     "narration": NARRATION_PROMPT + _flavour_suffix()},
         )
         if outcome.error:
             # Shown at the table but deliberately not logged as DM narration and

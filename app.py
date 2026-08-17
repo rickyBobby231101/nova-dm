@@ -33,6 +33,7 @@ from engine import (
     encounter,
     llm,
     portable,
+    rules,
     voice,
 )
 
@@ -297,7 +298,8 @@ def on_roll_request(data):
     result = dice.roll_check(char, ability, proficient=proficient, adv=adv)
     character.log_campaign_event(
         "roll", char["name"],
-        f"{char['name']} rolls {ability}: {result['d20']}+{result['modifier']}={result['total']}"
+        f"{char['name']} rolls {rules.ability_label(ability)}: "
+        f"{result['d20']}+{result['modifier']}={result['total']}"
     )
     socketio.emit("roll_result", {"character": char["name"], **result}, room=CAMPAIGN_ROOM)
 
