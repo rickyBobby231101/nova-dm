@@ -39,17 +39,19 @@ SOURCE = os.environ.get(
 # Set once the import has run, so a second run does not double the history.
 IMPORTED_KEY = "cathedral_import"
 
-# Written by hand rather than summarised by a model. It is three lines about two
-# sessions -- asking a 1B model to compress prose it will later read back is a
-# slow way to get something worse, and Phase 10 already decided the chronicle is
-# the DM's own notes rather than a machine's precis.
+# One line, deliberately. This started as four -- two nights of play, faithfully
+# noted -- and cost about 40 seconds of every turn thereafter, because the
+# chronicle is re-read on both passes. Measured against that, llama3.2 made no
+# use of it: asked point blank what Tillagon meant, it answered with weather.
+# So what survives is the hook rather than the scenery, and the full transcript
+# is still in campaign_log for anyone who wants to read what actually happened.
+#
+# Written by hand rather than summarised by a model: it is one sentence, and
+# asking a 1B model to compress prose it will later read back is a slow way to
+# get something worse.
 PRIOR_CHRONICLE = [
-    "Before this: two nights in the Cathedral with Jorlaan and Tillagon.",
-    "Jorlaan spoke, and the stones answered -- the moon drew back, and shadows "
-    "gathered at the edge of seeing.",
-    "Tillagon read the pattern and named it: the Cathedral is being manipulated. "
-    "Dark serpents in the twisted architecture. He did not say by what.",
-    "Aria drew her bow toward the shadows. That is where it stopped.",
+    "Before this: Tillagon read the pattern in the Cathedral and named it -- "
+    "the Cathedral is being manipulated. He did not say by what.",
 ]
 
 # The daemon's own entity -> class map, kept so a returning character is the
@@ -63,16 +65,12 @@ ENTITY_CLASSES = {
     "weaver": "Artificer",
 }
 
-# How the old speaker column maps onto the kinds this app logs. Anything not
-# listed is an entity speaking, which reads as narration here.
-SPEAKER_KINDS = {"dm": "dm", "dice": "roll", "pc": "action"}
-
-
-def _kind_for(speaker: str) -> str:
-    speaker = (speaker or "").lower()
-    if speaker.startswith("pc:"):
-        return "action"
-    return SPEAKER_KINDS.get(speaker, "dm")
+# Imported rows are logged under a kind chronicle.recent() does not select, so
+# they stay readable in the log without entering the DM's "just happened"
+# window. They get fresh row ids on insert and recent() orders by id, so logging
+# them as ordinary events told the DM that two sessions from a fortnight ago had
+# happened moments earlier -- and filled the tail budget saying it.
+ARCHIVE_KIND = "archive"
 
 
 def already_imported() -> bool:
@@ -109,7 +107,7 @@ def import_all(path: str = None, force: bool = False) -> dict:
             # rather than as something that happened this evening.
             con.execute(
                 "INSERT INTO campaign_log (ts, kind, actor, content) VALUES (?,?,?,?)",
-                (row["timestamp"], _kind_for(row["speaker"]),
+                (row["timestamp"], ARCHIVE_KIND,
                  row["name"] or row["speaker"], row["text"]),
             )
 

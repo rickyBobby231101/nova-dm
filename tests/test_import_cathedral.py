@@ -69,27 +69,40 @@ def test_original_timestamps_are_kept(old_db):
     assert stamps[0].startswith("2026-08-10")
 
 
-def test_speakers_become_the_kinds_this_app_understands(old_db):
+def test_imported_events_do_not_pose_as_things_that_just_happened(old_db):
+    """They get fresh row ids and recent() orders by id, so logging them as
+    ordinary events told the DM a fortnight-old session happened moments ago --
+    and spent the tail budget saying so."""
     import_cathedral.import_all(old_db)
+
     with character._campaign_con() as con:
-        kinds = {r["content"]: r["kind"] for r in
-                 con.execute("SELECT content, kind FROM campaign_log")}
-    assert kinds["The moon drew back from the Cathedral."] == "dm"
-    assert kinds["I draw my bow and step toward the shadows."] == "action"
-    assert kinds["Jorlaan (Bard (Trickster), Lv2): 15+2=17 — success"] == "roll"
-    # an entity speaking is narration here, not a player action
-    assert kinds["The Cathedral is being manipulated."] == "dm"
+        kinds = {r["kind"] for r in con.execute("SELECT kind FROM campaign_log")}
+    assert kinds == {import_cathedral.ARCHIVE_KIND}
+    assert import_cathedral.ARCHIVE_KIND not in chronicle.NARRATIVE_KINDS
+
+    tail = chronicle.context_block()
+    assert "I draw my bow and step toward the shadows." not in tail
 
 
-def test_the_dm_is_left_short_notes_rather_than_four_hundred_words(old_db):
-    """The chronicle is re-read on every turn. Dumping the transcript in there
-    would spend the whole memory budget on one evening from last week."""
+def test_the_dm_is_left_one_line_rather_than_a_transcript(old_db):
+    """The chronicle is re-read on both passes of every turn. Four lines of it
+    cost about 40s a turn and llama3.2 made no use of them -- asked what
+    Tillagon meant, it answered with weather. So: the hook, not the scenery."""
     import_cathedral.import_all(old_db)
 
     written = chronicle.get_chronicle()
-    assert "manipulated" in written
-    assert len(written) < 600, "notes, not minutes"
+    assert "manipulated" in written, "the hook has to survive the trim"
+    assert len(written) < 200, "one line, not minutes"
     assert "The moon drew back from the Cathedral." not in written
+
+
+def test_the_full_transcript_is_still_there_for_anyone_who_wants_it(old_db):
+    """Trimming what the DM re-reads must not throw away what was played."""
+    import_cathedral.import_all(old_db)
+
+    with character._campaign_con() as con:
+        texts = [r["content"] for r in con.execute("SELECT content FROM campaign_log")]
+    assert "The moon drew back from the Cathedral." in texts
 
 
 def test_the_prior_history_sorts_before_anything_played_since(old_db):
