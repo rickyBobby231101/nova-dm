@@ -538,3 +538,81 @@ def test_players_are_not_shown_the_database_column_name():
     assert rules.ability_label("int_") == "INT"
     assert rules.ability_label("int") == "INT"
     assert rules.ability_label("dex") == "DEX"
+
+
+# ---------------------------------------------------------------------------
+# Handing the die to the player
+# ---------------------------------------------------------------------------
+
+def test_a_client_cannot_send_its_own_number(monkeypatch):
+    """The prompt says *when* to roll, never what was rolled -- a client that
+    could report its own result would report a twenty every time."""
+    import app as app_module
+    from engine import handoff
+
+    rolled = []  # (an unknown token is refused -- see test_handoff.py)
+    monkeypatch.setattr(handoff, "answer", lambda token: rolled.append(token) or True)
+
+    # everything a client is allowed to say about a roll
+    app_module.on_player_roll({"token": "abc", "d20": 20, "total": 99})
+
+    assert rolled == ["abc"], "only the token is read; the numbers are ignored"
+
+
+def test_asking_can_be_turned_off(monkeypatch):
+    """It roughly doubles the wall time of a turn that needs a roll, so it has
+    to be one env var to put back."""
+    monkeypatch.setattr(dm.handoff, "ASK", False)
+    emitted = []
+    socketio = type("S", (), {"emit": lambda self, *a, **k: emitted.append(a)})()
+
+    dm._await_player({"id": 1, "name": "Ferrick"}, {"ability": "dex"}, None, socketio)
+
+    assert emitted == [], "no prompt should be sent when asking is off"
+
+
+def test_a_prompt_says_what_is_being_rolled(monkeypatch):
+    monkeypatch.setattr(dm.handoff, "ASK", True)
+    monkeypatch.setattr(dm.handoff, "wait", lambda pending, timeout=None: True)
+    emitted = []
+    socketio = type("S", (), {"emit": lambda self, name, payload=None, **k:
+                              emitted.append((name, payload))})()
+
+    dm._await_player({"id": 7, "name": "Ferrick"},
+                     {"ability": "dex", "proficient": True}, "advantage", socketio)
+
+    prompt = dict(emitted)["roll_prompt"]
+    assert prompt["character_id"] == 7
+    assert prompt["ability"] == "DEX"
+    assert prompt["proficient"] is True
+    assert prompt["advantage"] == "advantage"
+    assert prompt["token"]
+
+
+def test_nobody_taking_the_die_is_said_out_loud(monkeypatch):
+    """A roll the player did not make should look different from one they did."""
+    monkeypatch.setattr(dm.handoff, "ASK", True)
+    monkeypatch.setattr(dm.handoff, "wait", lambda pending, timeout=None: False)
+    emitted = []
+    socketio = type("S", (), {"emit": lambda self, name, payload=None, **k:
+                              emitted.append((name, payload))})()
+
+    dm._await_player({"id": 1, "name": "Ferrick"}, {"ability": "wis"}, None, socketio)
+
+    said = [p["text"] for n, p in emitted if n == "campaign_event"]
+    assert any("didn't pick up the die" in t for t in said)
+
+
+def test_the_prompt_is_always_cleared(monkeypatch):
+    """Otherwise a timed-out prompt sits on every phone forever."""
+    monkeypatch.setattr(dm.handoff, "ASK", True)
+    for answered in (True, False):
+        monkeypatch.setattr(dm.handoff, "wait", lambda pending, timeout=None, a=answered: a)
+        emitted = []
+
+        def record(self, name, payload=None, _sink=emitted, **kwargs):
+            _sink.append(name)
+
+        socketio = type("S", (), {"emit": record})()
+        dm._await_player({"id": 1, "name": "F"}, {"ability": "str"}, None, socketio)
+        assert "roll_prompt_done" in emitted

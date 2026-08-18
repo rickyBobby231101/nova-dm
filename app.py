@@ -33,6 +33,7 @@ from engine import (
     dice,
     dm,
     encounter,
+    handoff,
     llm,
     portable,
     rules,
@@ -368,6 +369,17 @@ def on_roll_request(data):
         f"{result['d20']}+{result['modifier']}={result['total']}"
     )
     socketio.emit("roll_result", {"character": char["name"], **result}, room=CAMPAIGN_ROOM)
+
+
+@socketio.on("player_roll")
+def on_player_roll(data):
+    """A player picked up the die the DM asked for.
+
+    The token is all the client sends. It cannot send a number -- a client that
+    could would send a twenty every time -- so the engine still rolls; this only
+    says when.
+    """
+    handoff.answer(data.get("token"))
 
 
 @socketio.on("submit_action")

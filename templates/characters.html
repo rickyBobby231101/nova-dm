@@ -48,7 +48,7 @@
 </head>
 <body>
   <h1>Welcome, {{ player.name }}</h1>
-  <div class="sub">Pick a character to play, or create a new one.</div>
+  <div class="sub">{% if characters %}{{ characters|length }} character{{ 's' if characters|length > 1 }} — pick one to play, or create another.{% else %}Create a character to join the table.{% endif %}</div>
 
   {% for c in characters %}
   <div class="char-card">

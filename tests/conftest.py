@@ -22,7 +22,7 @@ os.environ["NOVA_DM_CAMPAIGN_DB"] = os.path.join(_TEST_DB_DIR, "campaign.sqlite"
 os.environ.setdefault("NOVA_DM_SECRETS", os.path.join(_TEST_DB_DIR, "secrets.json"))
 os.environ.setdefault("NOVA_DM_AUDIO_DIR", os.path.join(_TEST_DB_DIR, "narration"))
 
-from engine import character, voice  # noqa: E402  (must follow the env setup above)
+from engine import character, handoff, voice  # noqa: E402  (must follow the env setup above)
 
 
 def pytest_configure(config):
@@ -38,6 +38,19 @@ def pytest_configure(config):
             f"tests would write to the REAL campaign database ({real}). "
             "engine.character.CAMPAIGN_DB_PATH must honour NOVA_DM_CAMPAIGN_DB."
         )
+
+
+@pytest.fixture(autouse=True)
+def never_wait_for_a_player(monkeypatch):
+    """No test may block on somebody tapping a button.
+
+    Handing the die to the player makes a turn stop until they take it, with a
+    90 second deadline. Left on, the suite waits out that deadline on every
+    roll -- one run took five minutes instead of four seconds. Tests that
+    exercise the handoff turn it back on for themselves.
+    """
+    monkeypatch.setattr(handoff, "ASK", False)
+    yield
 
 
 @pytest.fixture(autouse=True)

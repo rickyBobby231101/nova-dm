@@ -9,7 +9,18 @@ matters: the tools, the board context, and the engine that actually rolls."""
 import json
 import logging
 
-from . import campaign, character, chronicle, conditions, dice, encounter, llm, rules, voice
+from . import (
+    campaign,
+    character,
+    chronicle,
+    conditions,
+    dice,
+    encounter,
+    handoff,
+    llm,
+    rules,
+    voice,
+)
 
 log = logging.getLogger(__name__)
 
@@ -400,6 +411,12 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
             adv if adv != "none" else None,
             conditions.check_advantage(json.loads(char["conditions_json"] or "[]")),
         )
+        # Hand the die to the player if they are here to take it. The turn
+        # stops here until they tap, which is the point -- at a table the DM
+        # asks and you roll. _await_player returns when they have, or when the
+        # deadline passes and the table needs to move on.
+        _await_player(char, tool_input, adv, socketio)
+
         result = dice.roll_check(
             char, tool_input["ability"],
             proficient=tool_input.get("proficient", False),
@@ -544,6 +561,35 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
         return {"ended": ended, "xp_each": xp_each}
 
     return {"error": f"unknown tool: {name}"}
+
+
+def _await_player(char, tool_input, adv, socketio):
+    """Ask the player to roll, and wait. Returns nothing -- the roll itself is
+    still the engine's, because a client that could send its own number could
+    send a twenty every time."""
+    if not handoff.ASK or socketio is None:
+        return
+
+    pending = handoff.open_prompt(char["id"])
+    socketio.emit("roll_prompt", {
+        "token": pending.token,
+        "character_id": char["id"],
+        "character": char["name"],
+        "ability": rules.ability_label(tool_input["ability"]),
+        "proficient": bool(tool_input.get("proficient", False)),
+        "advantage": adv or "none",
+        "seconds": handoff.TIMEOUT,
+    }, room="campaign")
+
+    answered = handoff.wait(pending)
+    if not answered:
+        # Nobody took it. Say so rather than letting a die appear from nowhere:
+        # a roll the player did not make should look different from one they did.
+        socketio.emit("campaign_event", {
+            "text": f"({char['name']} didn't pick up the die — the engine rolls it)",
+            "kind": "roll",
+        }, room="campaign")
+    socketio.emit("roll_prompt_done", {"token": pending.token}, room="campaign")
 
 
 def handle_player_action(character_id: int, action_text: str, socketio):

@@ -63,6 +63,13 @@
                         font-weight:700; font-size:14px; color:#6a5cff; letter-spacing:1px; }
   .asi-note { margin-top:8px; padding:8px 10px; border-radius:8px;
               background:#1d1a33; border:1px solid #3a2f6b; color:#b9aaff; font-size:13px; }
+  .prompt-text { font-size:14px; margin-bottom:10px; }
+  .prompt-text b { color:#6a5cff; }
+  #roll-prompt { border-color:#3a2f6b; background:#1d1a33; }
+  #roll-prompt-btn { width:100%; }
+  .switch { font-size:10px; letter-spacing:1px; color:#9098ac; text-decoration:none;
+             border:1px solid #333848; border-radius:6px; padding:5px 8px; white-space:nowrap; }
+  .switch:active { background:#232733; }
 </style>
 </head>
 <body>
@@ -75,6 +82,8 @@
       {% endif %}
       <h1>{{ character.name }}</h1>
       <span class="meta">{{ character.race|capitalize }} {{ character.class|capitalize }}</span>
+      <!-- Once you are on the sheet there was no way back to the others. -->
+      <a class="switch" href="/characters" title="Play someone else">SWITCH</a>
     </div>
     {% if character.pending_asi %}
     <!-- Said on the sheet as well as announced in the feed: an announcement
@@ -129,6 +138,16 @@
     <button id="audio-unlock" class="mini" style="display:none; width:100%; margin-bottom:8px;"
             onclick="NovaNarration.unlock()">TAP TO ENABLE THE DM'S VOICE</button>
     <div id="feed"><div class="empty">Rolls from everyone at the table will appear here live.</div></div>
+  </div>
+
+  <!-- The DM has asked for a check and the turn is stopped until somebody
+       takes it. Shown to the whole table, but only the character's own player
+       gets the button -- everyone else sees who is being waited on. -->
+  <div class="card" id="roll-prompt" style="display:none">
+    <h2>The DM asks for a roll</h2>
+    <div id="roll-prompt-text" class="prompt-text"></div>
+    <button id="roll-prompt-btn" onclick="takeTheRoll()">ROLL</button>
+    <div class="meta" id="roll-prompt-wait" style="display:none">Waiting for them to roll…</div>
   </div>
 
   <div class="card">
@@ -313,6 +332,43 @@
     mute.textContent = s.muted ? 'THIS DEVICE: OFF' : 'THIS DEVICE: ON';
     document.getElementById('audio-unlock').style.display = s.blocked ? 'block' : 'none';
   });
+
+  // A check the DM asked for. The engine still rolls it -- this only says when,
+  // because a client that could send its own number would send a twenty.
+  let pendingRollToken = null;
+
+  socket.on('roll_prompt', (p) => {
+    pendingRollToken = p.token;
+    const card = document.getElementById('roll-prompt');
+    const mine = p.character_id === CHARACTER_ID;
+    const bits = [p.ability];
+    if (p.proficient) bits.push('proficient');
+    if (p.advantage && p.advantage !== 'none') bits.push(p.advantage);
+    document.getElementById('roll-prompt-text').innerHTML =
+      (mine ? '<b>You</b>' : escapeName(p.character)) + ' — ' + bits.join(' · ');
+    document.getElementById('roll-prompt-btn').style.display = mine ? 'block' : 'none';
+    document.getElementById('roll-prompt-wait').style.display = mine ? 'none' : 'block';
+    document.getElementById('roll-prompt-btn').disabled = false;
+    card.style.display = 'block';
+  });
+
+  socket.on('roll_prompt_done', () => {
+    pendingRollToken = null;
+    document.getElementById('roll-prompt').style.display = 'none';
+  });
+
+  function takeTheRoll() {
+    if (!pendingRollToken) return;
+    document.getElementById('roll-prompt-btn').disabled = true;
+    socket.emit('player_roll', {token: pendingRollToken});
+  }
+
+  // Character names come from players, so they are never trusted as markup.
+  function escapeName(s) {
+    const d = document.createElement('div');
+    d.textContent = s || 'Someone';
+    return d.innerHTML;
+  }
 
   // Only re-enable for the player whose turn actually finished -- everyone in the
   // room sees every turn_complete.
