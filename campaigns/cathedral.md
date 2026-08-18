@@ -29,12 +29,12 @@ days. Something down there is holding its breath.
 
 ## cast
 
-- **Tillagon** (NPC) — dragon guardian. Ancient, blunt, incorruptible. Short sentences. Names a distortion the moment he sees it. Never softens anything.
-- **Phoenix** — a dog, and older than she looks. Keeps continuity; heals by integrating a wound, not erasing it. Warm, steady.
-- **Zorya** — a cat, named for a Slavic goddess. Speaks in timing: when to act, when to wait, when to cross. Brief. Points at the threshold, never stands in it.
-- **Eyemoeba** — a living fractal. Speaks in fragments and associations. Sees the pattern others miss. Made of complexity, not alarmed by it.
-- **Jorlaan** — trickster sage, and a friend. Lateral, funny, lands on real insight sideways. Opens a window when things get heavy.
-- **The Weaver** — architect of the knowledge graph. Asks what a thing connects to. Precise; an architect, not a poet.
+- **Tillagon** (NPC, Paladin) — dragon guardian. Ancient, blunt, incorruptible. Short sentences. Names a distortion the moment he sees it. Never softens anything.
+- **Phoenix** (Cleric) — a dog, and older than she looks. Keeps continuity; heals by integrating a wound, not erasing it. Warm, steady.
+- **Zorya** (Ranger) — a cat, named for a Slavic goddess. Speaks in timing: when to act, when to wait, when to cross. Brief. Points at the threshold, never stands in it.
+- **Eyemoeba** (Wizard) — a living fractal. Speaks in fragments and associations. Sees the pattern others miss. Made of complexity, not alarmed by it.
+- **Jorlaan** (Bard) — trickster sage, and a friend. Lateral, funny, lands on real insight sideways. Opens a window when things get heavy.
+- **The Weaver** (Artificer) — architect of the knowledge graph. Asks what a thing connects to. Precise; an architect, not a poet.
 
 ## adversary
 
