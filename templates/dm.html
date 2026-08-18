@@ -56,10 +56,12 @@
   .party-row { display:flex; align-items:center; gap:7px; font-size:12px; padding:3px 0; }
   .roster-face { width:22px; height:22px; border-radius:5px; object-fit:cover;
                  vertical-align:middle; margin-right:6px; border:1px solid #333848; }
+  .here-row { font-size:12px; padding:3px 0; }
+  h2 .sub { font-size:10px; color:#666; font-weight:400; letter-spacing:0; text-transform:none; }
 </style>
 </head>
 <body>
-  <h1>DM Screen <span class="sub" id="enc-name">no encounter</span></h1>
+  <h1>The Table <span class="sub" id="enc-name">no encounter</span></h1>
   <!-- Where the AI DM thinks the party is. Its own note to itself, surfaced so
        the human running the table can see what it will act on next turn. -->
   <div class="sub" id="scene" style="margin:-8px 0 12px">{{ scene or 'No scene set yet.' }}</div>
@@ -69,12 +71,26 @@
       <div class="card">
         <h2>
           Initiative
+          {% if can_control %}
           <span class="row">
             <button class="mini" id="next-turn" onclick="socket.emit('dm_next_turn')">NEXT TURN</button>
             <button class="mini danger" id="end-enc" onclick="socket.emit('dm_end_encounter')">END</button>
           </span>
+          {% endif %}
         </h2>
         <div id="order"><div class="empty">No encounter running. Build one from the SRD →</div></div>
+      </div>
+
+      <div class="card">
+        <h2>Who's here <span class="sub" id="here-count"></span></h2>
+        <div id="here">
+          {% for p in here %}
+          <div class="here-row">{{ p.player }}{% if p.character %} <span style="color:#9098ac">· {{ p.character }}</span>{% endif %}
+            <span style="color:#666">· {{ p.minutes }}m</span></div>
+          {% else %}
+          <div class="empty">Nobody connected.</div>
+          {% endfor %}
+        </div>
       </div>
 
       <div class="card">
@@ -84,8 +100,9 @@
     </div>
 
     <div>
+      {% if can_control %}
       <div class="card">
-        <h2>Encounter Builder</h2>
+        <h2>Encounter Builder <span class="sub">manual override</span></h2>
         <div class="row">
           <input id="enc-title" placeholder="Goblin ambush" style="flex:1">
         </div>
@@ -118,7 +135,7 @@
       <div class="card">
         <!-- Combat XP is paid out automatically when a fight ends. This is for
              what combat doesn't cover: a quest done, a rescue, a deal struck. -->
-        <h2>Award XP</h2>
+        <h2>Award XP <span class="sub">manual override</span></h2>
         <div class="row">
           <input id="xp-amount" type="number" min="1" placeholder="XP each" style="width:100px">
           <input id="xp-reason" placeholder="What for? e.g. freeing the miners" style="flex:1">
@@ -127,6 +144,20 @@
           <button onclick="awardXp()">AWARD TO CHECKED PARTY</button>
         </div>
       </div>
+      {% else %}
+      <!-- Nova runs the game. These exist for when the model stalls or gets
+           something badly wrong, which is not the happy path but is a real one. -->
+      <div class="card">
+        <h2>Watching</h2>
+        <div class="empty">Nova is running this table. If it stalls,
+          <a href="#" onclick="document.getElementById('override').style.display='block';return false"
+             style="color:#6a5cff">take manual control</a>.</div>
+        <form method="post" action="/dm" id="override" style="display:none; margin-top:10px">
+          <input type="password" name="dm_password" placeholder="DM password" style="width:100%">
+          <button type="submit" style="margin-top:8px">TAKE CONTROL</button>
+        </form>
+      </div>
+      {% endif %}
     </div>
   </div>
 
@@ -170,6 +201,22 @@
   // Sent once on connect. A phone that slept dropped the socket and missed
   // whatever was narrated meanwhile, so without this it reconnects to a blank
   // feed and the session looks like it never happened.
+  socket.on('who_is_here', (d) => {
+    const box = document.getElementById('here');
+    const rows = d.here || [];
+    document.getElementById('here-count').textContent =
+      rows.length ? `${rows.length} connected` : '';
+    if (!rows.length) { box.innerHTML = '<div class="empty">Nobody connected.</div>'; return; }
+    box.innerHTML = '';
+    rows.forEach((p) => {
+      const el = document.createElement('div');
+      el.className = 'here-row';
+      // player and character names come from players, so never innerHTML
+      el.textContent = p.player + (p.character ? ` · ${p.character}` : '') + ` · ${p.minutes}m`;
+      box.appendChild(el);
+    });
+  });
+
   socket.on('feed_history', (data) => {
     (data.entries || []).forEach((e) => addFeedEntry(e.text));
   });

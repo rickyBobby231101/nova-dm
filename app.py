@@ -36,6 +36,7 @@ from engine import (
     handoff,
     llm,
     portable,
+    presence,
     rules,
     voice,
 )
@@ -244,12 +245,18 @@ def play():
 
 
 @app.route("/dm", methods=["GET", "POST"])
+@requires_table
 def dm_screen():
-    """The DM's chair is behind its own password.
+    """The table, watched.
 
-    Separate from the join code on purpose: sitting at the table shouldn't hand
-    someone the board. A player who knows the join code still can't start
-    encounters, deal damage, or hand out levels.
+    Nova runs the game now, so this is a spectator view: the feed, the board,
+    the party and who is actually connected. Anyone with the join code can
+    watch, because there is no longer a privileged human whose screen this is.
+
+    The manual controls are still here, behind the DM password, and stay that
+    way deliberately. They are the only way to move the game when the model
+    stalls or gets something badly wrong, and deleting a working escape hatch
+    because it is not the happy path is how an evening ends early.
     """
     if request.method == "POST" and not _is_dm():
         if not auth.check_dm_password(request.form.get("dm_password", "")):
@@ -258,13 +265,12 @@ def dm_screen():
         session.permanent = True
         return redirect(url_for("dm_screen"))
 
-    if not _is_dm():
-        return render_template("dm_login.html")
-
     return render_template("dm.html", encounter=encounter.get_state(),
                           characters=character.list_active_characters(),
                           conditions=encounter.list_conditions(),
-                          scene=chronicle.get_scene())
+                          scene=chronicle.get_scene(),
+                          here=presence.here(),
+                          can_control=_is_dm())
 
 
 @app.route("/narration/<clip_id>.wav")
@@ -321,6 +327,10 @@ def on_connect():
         return False
 
     join_room(CAMPAIGN_ROOM)
+    player = _current_player()
+    presence.arrive(request.sid, player["name"] if player else None)
+    socketio.emit("who_is_here", {"here": presence.here()}, room=CAMPAIGN_ROOM)
+
     # A device joining mid-session needs the current state of the shared speaker
     # and whatever fight is already underway.
     emit("voice_state", {"enabled": voice.is_enabled(), "available": voice.available(),
@@ -369,6 +379,20 @@ def on_roll_request(data):
         f"{result['d20']}+{result['modifier']}={result['total']}"
     )
     socketio.emit("roll_result", {"character": char["name"], **result}, room=CAMPAIGN_ROOM)
+
+
+@socketio.on("disconnect")
+def on_disconnect():
+    presence.depart(request.sid)
+    socketio.emit("who_is_here", {"here": presence.here()}, room=CAMPAIGN_ROOM)
+
+
+@socketio.on("watching")
+def on_watching(data):
+    """A device says which character's sheet it has open, so the table view can
+    show people rather than just a count."""
+    presence.set_character(request.sid, (data or {}).get("character"))
+    socketio.emit("who_is_here", {"here": presence.here()}, room=CAMPAIGN_ROOM)
 
 
 @socketio.on("player_roll")

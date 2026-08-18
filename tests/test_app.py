@@ -210,12 +210,12 @@ def test_bad_paste_shows_a_message_instead_of_a_500():
     assert b"IMPORT A CHARACTER" in resp.data, "should re-render the page, not a bare error"
 
 
-def test_dm_screen_renders_once_the_password_is_given():
+def test_the_table_view_renders():
     client = app_module.app.test_client()
-    _become_dm(client)
+    _join(client)
     resp = client.get("/dm")
     assert resp.status_code == 200
-    assert b"DM Screen" in resp.data
+    assert b"The Table" in resp.data
 
 
 # --------------------------------------------------------------------------
@@ -253,19 +253,23 @@ def test_socket_refuses_a_browser_that_never_joined():
     assert not stranger.is_connected()
 
 
-def test_dm_screen_is_not_reachable_with_only_the_join_code(client):
-    _join(client)
-    resp = client.get("/dm")
+def test_the_dm_events_still_need_the_password_even_though_the_view_does_not():
+    """The view is public to the table; the authority is not. Nova drives, but
+    a player must not be able to start fights because they can watch one."""
+    player = _socket_client()  # join code only
+    player.get_received()
 
-    assert b"DM Screen" not in resp.data
-    assert b"TAKE THE CHAIR" in resp.data
+    player.emit("dm_award_xp", {"amount": 10000})
+
+    assert "dm_denied" in [r["name"] for r in player.get_received()]
 
 
 def test_wrong_dm_password_is_refused(client):
+    _join(client)
     resp = client.post("/dm", data={"dm_password": "NOPE"})
 
     assert resp.status_code == 403
-    assert b"DM Screen" not in resp.data
+    assert b"Encounter Builder" not in resp.data
 
 
 def test_a_player_cannot_drive_the_dm_events():
@@ -615,3 +619,72 @@ def test_a_brand_new_campaign_backfills_nothing_rather_than_erroring():
     client = _socket_client()
     events = {r["name"]: r["args"][0] for r in client.get_received()}
     assert events["feed_history"]["entries"] == []
+
+
+# ---------------------------------------------------------------------------
+# The table, watched
+# ---------------------------------------------------------------------------
+
+def test_anyone_with_the_join_code_can_watch_the_table():
+    """Nova runs the game now, so there is no privileged human whose screen
+    this is."""
+    client = app_module.app.test_client()
+    _join(client)
+
+    resp = client.get("/dm")
+
+    assert resp.status_code == 200
+    assert b"The Table" in resp.data
+
+
+def test_a_spectator_is_not_offered_the_controls():
+    client = app_module.app.test_client()
+    _join(client)
+
+    resp = client.get("/dm")
+
+    assert b"Encounter Builder" not in resp.data
+    assert b"AWARD TO CHECKED PARTY" not in resp.data
+    assert b"take manual control" in resp.data, "the escape hatch is still findable"
+
+
+def test_the_controls_come_back_with_the_dm_password():
+    """Deleting a working escape hatch because it is not the happy path is how
+    an evening ends early."""
+    client = app_module.app.test_client()
+    _join(client)
+    _become_dm(client)
+
+    resp = client.get("/dm")
+
+    assert b"Encounter Builder" in resp.data
+    assert b"manual override" in resp.data
+
+
+def test_watching_the_table_still_needs_the_join_code(client):
+    assert client.get("/dm").status_code == 302
+
+
+def test_the_table_shows_who_is_actually_connected():
+    """A character sheet exists whether or not anyone has it open, so counting
+    characters showed six players in an empty room."""
+    from engine import presence
+    presence.clear()
+
+    watcher = _socket_client()
+    events = {r["name"]: r["args"][0] for r in watcher.get_received()}
+
+    assert "who_is_here" in events
+    assert len(events["who_is_here"]["here"]) == 1
+    assert presence.count() == 1
+
+
+def test_leaving_removes_you_from_the_table():
+    from engine import presence
+    presence.clear()
+
+    watcher = _socket_client()
+    assert presence.count() == 1
+    watcher.disconnect()
+
+    assert presence.count() == 0

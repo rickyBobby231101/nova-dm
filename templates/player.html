@@ -164,7 +164,10 @@
 <script src="/static/narration.js"></script>
 <script>
   const CHARACTER_ID = {{ character.id }};
+  const CHARACTER_NAME = {{ character.name | tojson }};
   const socket = io();
+  // so the table view can show people rather than a count
+  socket.on('connect', () => socket.emit('watching', {character: CHARACTER_NAME}));
   const feed = document.getElementById('feed');
 
   // Your own conditions sit on the sheet, not just in the initiative list --
