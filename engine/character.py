@@ -335,13 +335,19 @@ def raise_ability(character_id: int, ability: str, amount: int = 1) -> dict:
 
 def apply_damage(character_id: int, amount: int) -> dict:
     char = get_character(character_id)
-    remaining = amount
+    # Damage below zero is not healing, it is a mistake. Observed live: the DM
+    # called apply_damage(-3) and the engine obediently put a character on
+    # 12/9 HP -- above their own maximum, which nothing else in the game can
+    # produce. Healing has its own tool, and it caps.
+    remaining = max(0, amount)
     temp_hp = char["temp_hp"]
     if temp_hp > 0:
         absorbed = min(temp_hp, remaining)
         temp_hp -= absorbed
         remaining -= absorbed
-    current_hp = max(0, char["current_hp"] - remaining)
+    # Clamped at both ends. The floor was always here; the ceiling is what was
+    # missing, and a stored value above max_hp outlives the turn that made it.
+    current_hp = min(char["max_hp"], max(0, char["current_hp"] - remaining))
     with _campaign_con() as con:
         con.execute("UPDATE characters SET current_hp=?, temp_hp=? WHERE id=?",
                     (current_hp, temp_hp, character_id))

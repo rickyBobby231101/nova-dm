@@ -236,3 +236,42 @@ def test_an_unspent_improvement_survives_until_it_is_used():
     assert character.get_character(char["id"])["pending_asi"] == 2
     character.apply_level_up(char["id"], 5)
     assert character.get_character(char["id"])["pending_asi"] == 2, "not lost, not doubled"
+
+
+# ---------------------------------------------------------------------------
+# Hit points cannot leave their own range
+# ---------------------------------------------------------------------------
+
+def test_negative_damage_does_not_heal():
+    """Observed live: the DM called apply_damage(-3) and the engine put a
+    character on 12/9 HP. Healing has its own tool, and it caps."""
+    char = _leveller()
+    before = character.get_character(char["id"])["current_hp"]
+
+    result = character.apply_damage(char["id"], -3)
+
+    assert result["current_hp"] == before
+    assert result["current_hp"] <= character.get_character(char["id"])["max_hp"]
+
+
+def test_damage_never_pushes_hit_points_above_maximum():
+    char = _leveller()
+    with character._campaign_con() as con:  # a sheet already out of range
+        con.execute("UPDATE characters SET current_hp=max_hp+5 WHERE id=?", (char["id"],))
+
+    result = character.apply_damage(char["id"], 0)
+
+    sheet = character.get_character(char["id"])
+    assert result["current_hp"] == sheet["max_hp"], "the stored value is corrected, not preserved"
+
+
+def test_damage_still_stops_at_zero():
+    char = _leveller()
+    result = character.apply_damage(char["id"], 9999)
+    assert result["current_hp"] == 0 and result["unconscious"]
+
+
+def test_ordinary_damage_is_unaffected():
+    char = _leveller()
+    before = character.get_character(char["id"])["current_hp"]
+    assert character.apply_damage(char["id"], 3)["current_hp"] == before - 3
