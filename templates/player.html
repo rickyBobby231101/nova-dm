@@ -152,6 +152,10 @@
 
   <div class="card">
     <h2>Your Action</h2>
+    <!-- Turns are serialized: this box is saturated by one, so two at once run
+         at half speed each and interleave in the feed. Say so, rather than
+         letting a second player watch a dead button. -->
+    <div class="meta" id="dm-state" style="display:none"></div>
     <textarea id="action-text" placeholder="Describe what you do..."></textarea>
     <button id="action-submit" onclick="submitAction()">SUBMIT ACTION</button>
   </div>
@@ -331,6 +335,26 @@
     mute.classList.toggle('on', !s.muted);
     mute.textContent = s.muted ? 'THIS DEVICE: OFF' : 'THIS DEVICE: ON';
     document.getElementById('audio-unlock').style.display = s.blocked ? 'block' : 'none';
+  });
+
+  // Somebody else is mid-turn. Everyone's submit is held, because the turn
+  // after this one will be slower if it starts now.
+  let tableBusy = false;
+
+  socket.on('dm_state', (s) => {
+    tableBusy = !!s.busy;
+    const note = document.getElementById('dm-state');
+    const btn = document.getElementById('action-submit');
+    if (s.busy) {
+      note.textContent = s.acting ? `Nova is narrating ${s.acting}'s turn…`
+                                  : `Waiting — ${s.waiting || 'someone'} is queued.`;
+      note.style.display = 'block';
+      btn.disabled = true;
+    } else {
+      note.style.display = 'none';
+      btn.disabled = false;
+      btn.textContent = 'SUBMIT ACTION';
+    }
   });
 
   // A check the DM asked for. The engine still rolls it -- this only says when,

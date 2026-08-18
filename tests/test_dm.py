@@ -127,9 +127,11 @@ def test_handle_player_action_runs_tool_loop_then_narrates(monkeypatch):
     assert any("I attack the goblin" in t for t in emitted_texts)
     assert any("swing" in t for t in emitted_texts)
 
-    assert ("turn_complete", {"character_id": char["id"]}) == (
-        socketio.emit.call_args_list[-1].args[0], socketio.emit.call_args_list[-1].args[1]
-    )
+    # emitted with the right character -- not necessarily last, since the
+    # table's busy flag is cleared after the turn returns
+    assert ("turn_complete", {"character_id": char["id"]}) in [
+        (c.args[0], c.args[1]) for c in socketio.emit.call_args_list if len(c.args) > 1
+    ]
 
 
 def test_narration_is_tagged_with_the_voice_that_spoke_it(monkeypatch):
@@ -418,7 +420,8 @@ def test_turn_survives_a_broken_speaker(monkeypatch):
         dm.handle_player_action(char["id"], "I open the door", socketio)
 
     assert any("torchlight" in t for t in _emitted(socketio))
-    assert socketio.emit.call_args_list[-1].args[0] == "turn_complete"
+    # emitted, not necessarily last -- the table's busy flag is cleared after it
+    assert "turn_complete" in [c.args[0] for c in socketio.emit.call_args_list]
 
 
 def test_handle_player_action_surfaces_an_overlong_turn(monkeypatch):
@@ -434,7 +437,8 @@ def test_handle_player_action_surfaces_an_overlong_turn(monkeypatch):
     dm.handle_player_action(char["id"], "I keep trying forever", socketio)
 
     assert any("gather their thoughts" in t for t in _emitted(socketio))
-    assert socketio.emit.call_args_list[-1].args[0] == "turn_complete"
+    # emitted, not necessarily last -- the table's busy flag is cleared after it
+    assert "turn_complete" in [c.args[0] for c in socketio.emit.call_args_list]
 
 
 def test_handle_player_action_surfaces_a_dead_voice_instead_of_hanging(monkeypatch):
@@ -460,7 +464,8 @@ def test_handle_player_action_surfaces_a_dead_voice_instead_of_hanging(monkeypat
     assert "dm" not in kinds
 
     # even on the error path the player's button must be released
-    assert socketio.emit.call_args_list[-1].args[0] == "turn_complete"
+    # emitted, not necessarily last -- the table's busy flag is cleared after it
+    assert "turn_complete" in [c.args[0] for c in socketio.emit.call_args_list]
 
 
 # ---------------------------------------------------------------------------
@@ -616,3 +621,72 @@ def test_the_prompt_is_always_cleared(monkeypatch):
         socketio = type("S", (), {"emit": record})()
         dm._await_player({"id": 1, "name": "F"}, {"ability": "str"}, None, socketio)
         assert "roll_prompt_done" in emitted
+
+
+# ---------------------------------------------------------------------------
+# One turn at a time
+# ---------------------------------------------------------------------------
+
+def test_two_players_acting_at_once_are_serialized(monkeypatch):
+    """This box is saturated by a single turn, so two at once do not run twice
+    as fast -- each runs at half speed and both wait longer than if they had
+    queued. They also interleave in the feed, which reads as the DM losing the
+    thread."""
+    import threading
+    import time
+
+    overlapped = []
+    inside = threading.Event()
+
+    def slow_turn(actor, character_id, action_text, socketio):
+        if inside.is_set():
+            overlapped.append(True)
+        inside.set()
+        time.sleep(0.2)
+        inside.clear()
+
+    monkeypatch.setattr(dm, "_run_turn", slow_turn)
+    monkeypatch.setattr(dm.character, "get_character", lambda cid: {"id": cid, "name": "P"})
+    socketio = type("S", (), {"emit": lambda self, *a, **k: None})()
+
+    threads = [threading.Thread(target=dm.handle_player_action, args=(i, "act", socketio))
+               for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert overlapped == [], "turns must not run concurrently"
+
+
+def test_the_table_is_told_when_it_is_busy(monkeypatch):
+    """A second player watching a dead button should know why."""
+    monkeypatch.setattr(dm, "_run_turn", lambda *a: None)
+    monkeypatch.setattr(dm.character, "get_character", lambda cid: {"id": cid, "name": "Ferrick"})
+    sent = []
+    socketio = type("S", (), {"emit": lambda self, name, payload=None, **k:
+                              sent.append((name, payload))})()
+
+    dm.handle_player_action(1, "I listen.", socketio)
+
+    states = [p for n, p in sent if n == "dm_state"]
+    assert states[0]["busy"] is True and states[0]["acting"] == "Ferrick"
+    assert states[-1]["busy"] is False, "and told when it is free again"
+
+
+def test_the_table_is_freed_even_if_the_turn_explodes(monkeypatch):
+    """A crash mid-turn must not leave every player locked out forever."""
+    def boom(*a):
+        raise RuntimeError("the DM fell over")
+
+    monkeypatch.setattr(dm, "_run_turn", boom)
+    monkeypatch.setattr(dm.character, "get_character", lambda cid: {"id": cid, "name": "P"})
+    sent = []
+    socketio = type("S", (), {"emit": lambda self, name, payload=None, **k:
+                              sent.append((name, payload))})()
+
+    with pytest.raises(RuntimeError):
+        dm.handle_player_action(1, "act", socketio)
+
+    assert not dm.is_busy()
+    assert [p for n, p in sent if n == "dm_state"][-1]["busy"] is False

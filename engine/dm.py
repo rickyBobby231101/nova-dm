@@ -8,6 +8,7 @@ or cares which voice is in the DM's chair. What it still owns is the part that
 matters: the tools, the board context, and the engine that actually rolls."""
 import json
 import logging
+import threading
 
 from . import (
     campaign,
@@ -563,6 +564,18 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
     return {"error": f"unknown tool: {name}"}
 
 
+# One turn at a time. D&D is sequential anyway, but the reason here is
+# arithmetic: this box is saturated by a single turn, so two at once do not run
+# twice as fast -- they each run at half speed and both players wait longer than
+# if they had queued. Worse, two turns interleave in the feed and can both move
+# the scene, which reads as the DM losing the thread.
+_turn_lock = threading.Lock()
+
+
+def is_busy() -> bool:
+    return _turn_lock.locked()
+
+
 def _await_player(char, tool_input, adv, socketio):
     """Ask the player to roll, and wait. Returns nothing -- the roll itself is
     still the engine's, because a client that could send its own number could
@@ -596,6 +609,26 @@ def handle_player_action(character_id: int, action_text: str, socketio):
     actor = character.get_character(character_id)
     if not actor:
         return
+
+    # Everyone is told the table is busy before this blocks, so a player who
+    # submitted second sees why nothing is happening rather than assuming it
+    # broke. Queued, not refused: their action is not lost.
+    if socketio is not None and _turn_lock.locked():
+        socketio.emit("dm_state", {"busy": True, "waiting": actor["name"]},
+                      room="campaign")
+
+    with _turn_lock:
+        if socketio is not None:
+            socketio.emit("dm_state", {"busy": True, "acting": actor["name"]},
+                          room="campaign")
+        try:
+            _run_turn(actor, character_id, action_text, socketio)
+        finally:
+            if socketio is not None:
+                socketio.emit("dm_state", {"busy": False}, room="campaign")
+
+
+def _run_turn(actor, character_id: int, action_text: str, socketio):
 
     action_line = f"{actor['name']}: {action_text}"
     character.log_campaign_event("action", actor["name"], action_line)
