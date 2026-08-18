@@ -167,6 +167,13 @@
     feed.prepend(el);
   }
 
+  // Sent once on connect. A phone that slept dropped the socket and missed
+  // whatever was narrated meanwhile, so without this it reconnects to a blank
+  // feed and the session looks like it never happened.
+  socket.on('feed_history', (data) => {
+    (data.entries || []).forEach((e) => addFeedEntry(e.text));
+  });
+
   socket.on('campaign_event', (d) => addFeedEntry(d.text, d.provider));
   socket.on('scene_update', (d) => {
     document.getElementById('scene').textContent = d.scene || 'No scene set yet.';

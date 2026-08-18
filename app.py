@@ -325,7 +325,29 @@ def on_connect():
     emit("voice_state", {"enabled": voice.is_enabled(), "available": voice.available(),
                          "sink": voice.sink()})
     emit("encounter_update", {"encounter": encounter.get_state()})
+    # ...and the story. This was missing, and the gap is invisible from the
+    # server: a phone that sleeps or backgrounds its browser drops the socket,
+    # and everything narrated meanwhile is broadcast to a room it is no longer
+    # in. It reconnects to an empty feed and looks like nothing ever happened.
+    emit("feed_history", {"entries": _recent_feed()})
     return None
+
+
+# What the feed shows, oldest first so it reads in order. `archive` is left out:
+# those are the imported Cathedral sessions, which are history rather than
+# anything this table just watched happen.
+FEED_KINDS = ("action", "dm", "roll", "hp", "encounter", "level_up", "level", "xp")
+
+
+def _recent_feed(limit: int = 30) -> list:
+    with character._campaign_con() as con:
+        rows = con.execute(
+            "SELECT kind, actor, content FROM campaign_log "
+            f"WHERE kind IN ({','.join('?' for _ in FEED_KINDS)}) "
+            "ORDER BY id DESC LIMIT ?",
+            (*FEED_KINDS, limit),
+        ).fetchall()
+    return [{"text": r["content"], "kind": r["kind"]} for r in reversed(rows)]
 
 
 @socketio.on("roll_request")

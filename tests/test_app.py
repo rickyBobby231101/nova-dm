@@ -575,3 +575,43 @@ def test_portraits_are_behind_the_join_code(client):
     """The story is for the table, and so are their faces."""
     resp = client.get("/avatar/" + "a" * 32 + ".png")
     assert resp.status_code == 302
+
+
+# ---------------------------------------------------------------------------
+# Reconnecting mid-session
+# ---------------------------------------------------------------------------
+
+def test_a_reconnecting_device_is_given_the_story_it_missed():
+    """A phone that sleeps drops the socket, and everything narrated meanwhile
+    is broadcast to a room it is no longer in. Without this it reconnects to a
+    blank feed and the session looks like it never happened."""
+    app_module.character.log_campaign_event("action", "Chazel", "Chazel: I listen at the door.")
+    app_module.character.log_campaign_event("dm", "DM", "The silence answers.")
+
+    client = _socket_client()
+    events = {r["name"]: r["args"][0] for r in client.get_received()}
+
+    assert "feed_history" in events
+    texts = [e["text"] for e in events["feed_history"]["entries"]]
+    assert "The silence answers." in texts
+    assert texts.index("Chazel: I listen at the door.") < texts.index("The silence answers."), \
+        "oldest first, so the feed reads in order"
+
+
+def test_the_backfill_leaves_out_the_imported_cathedral_sessions():
+    """Those are history, not something this table just watched happen."""
+    app_module.character.log_campaign_event("archive", "Nova", "A night from a fortnight ago.")
+    app_module.character.log_campaign_event("dm", "DM", "Tonight's narration.")
+
+    client = _socket_client()
+    events = {r["name"]: r["args"][0] for r in client.get_received()}
+
+    texts = [e["text"] for e in events["feed_history"]["entries"]]
+    assert "Tonight's narration." in texts
+    assert "A night from a fortnight ago." not in texts
+
+
+def test_a_brand_new_campaign_backfills_nothing_rather_than_erroring():
+    client = _socket_client()
+    events = {r["name"]: r["args"][0] for r in client.get_received()}
+    assert events["feed_history"]["entries"] == []
