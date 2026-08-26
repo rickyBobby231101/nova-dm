@@ -14,7 +14,8 @@ game is already up and already on the tailnet**. There is no startup ritual.
 | DM screen | add `/dm` to any of the above |
 
 The wifi address can change if the router hands out a new lease. The tailnet
-name never does.
+name never does. `tailscale status` prints both of yours; they are deliberately
+not written down here, because this repo is public.
 
 ## Codes
 
@@ -115,7 +116,7 @@ available. Two consequences:
 - Inbound traffic reaches the game through `tailscale serve`, not through the
   kernel. That is why the forward exists and must stay configured.
 - This laptop **cannot reach its own tailnet address**. Testing
-  `http://<tailnet-ip>:5050` from here will always fail; it works only from
+  its own `100.x` address from here will always fail; it works only from
   another device. Use `localhost` to test locally.
 
 `~/.local/bin/tailscale` is a wrapper that points the CLI at the rootless

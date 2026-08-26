@@ -25,9 +25,11 @@ You'll know it worked when the Tailscale app says **Connected**.
 
 ## 3. Open the game
 
-> ### http://<this-machine>.<your-tailnet>.ts.net:5050
+> ### The link I sent you
 
-Any browser. Works fine on a phone.
+Any browser. Works fine on a phone. It ends in `.ts.net:5050` — that is the
+tailnet address of the laptop the game runs on, and it only works once
+Tailscale says **Connected**.
 
 ## 4. Join
 
