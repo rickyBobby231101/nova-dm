@@ -5,3 +5,16 @@ __pycache__/
 .venv/
 db/avatars/
 db/backups/
+
+# Nothing below exists in the tree today. These are here so that the first time
+# one does -- a dropped-in .env, a voice model, a log someone redirected here --
+# it cannot be committed by a hurried `git add .`.
+.env
+.env.*
+secrets.json
+*.log
+*.onnx
+*.gguf
+*.bin
+*.pt
+*.safetensors
