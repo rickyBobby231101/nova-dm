@@ -688,3 +688,35 @@ def test_leaving_removes_you_from_the_table():
     watcher.disconnect()
 
     assert presence.count() == 0
+
+
+def test_connect_replays_turn_state_so_a_late_device_is_not_stuck():
+    """The bug this pins cost a live session.
+
+    `dm_state` is broadcast once when a turn starts and once when it ends, and
+    the client disables its submit button until it hears the end. A device that
+    is disconnected at that moment -- a slept phone, or any page open across a
+    server restart, which kills the `finally` that sends it -- never hears it,
+    and the button stays dead forever. Connect has to replay the state rather
+    than assume the client was listening.
+    """
+    from engine import dm
+
+    # Nobody is acting: a device arriving now must be told the table is free,
+    # which is what unsticks a client left disabled by a restart.
+    idle = _socket_client()
+    state = [r for r in idle.get_received() if r["name"] == "dm_state"]
+    assert state, "connect must send dm_state at all"
+    assert state[-1]["args"][0] == {"busy": False, "acting": None}
+
+    # Mid-turn, the same connect must say so -- and name who, or the note reads
+    # "someone is queued" to a table that can see whose turn it is.
+    dm._turn_lock.acquire()
+    dm._acting = "Mira"
+    try:
+        latecomer = _socket_client()
+        mid = [r for r in latecomer.get_received() if r["name"] == "dm_state"][-1]
+        assert mid["args"][0] == {"busy": True, "acting": "Mira"}
+    finally:
+        dm._acting = None
+        dm._turn_lock.release()

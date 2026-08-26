@@ -341,6 +341,12 @@ def on_connect():
     # and everything narrated meanwhile is broadcast to a room it is no longer
     # in. It reconnects to an empty feed and looks like nothing ever happened.
     emit("feed_history", {"entries": _recent_feed()})
+    # ...and whether the table is mid-turn. Same class of gap as the feed: the
+    # client disables its submit button on `dm_state` and re-enables it only on
+    # the matching end, which it cannot receive while disconnected. A phone that
+    # slept through a turn, or any page open across a restart, otherwise comes
+    # back to a button that never works again.
+    emit("dm_state", dm.turn_state())
     return None
 
 

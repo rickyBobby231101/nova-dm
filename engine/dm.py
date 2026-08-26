@@ -571,9 +571,33 @@ def _execute_tool(name: str, tool_input: dict, socketio) -> dict:
 # the scene, which reads as the DM losing the thread.
 _turn_lock = threading.Lock()
 
+# Who the table is waiting on, or None. Held alongside the lock rather than
+# derived from it, because `locked()` says that a turn is running and not whose
+# it is, and the reconnect replay below needs the name to say anything useful.
+# In memory on purpose, like presence: it is a fact about right now, and a
+# stored version would outlive the turn it describes.
+_acting = None
+
 
 def is_busy() -> bool:
     return _turn_lock.locked()
+
+
+def turn_state() -> dict:
+    """The `dm_state` payload for a device that just arrived.
+
+    `dm_state` is broadcast once, when a turn starts and when it ends, so a
+    device that is not connected at that instant never hears the end of it --
+    and the client disables its submit button until it does. A phone that slept
+    through a turn, or any browser open across a server restart (the restart
+    kills the `finally` that would have sent `busy: False`), comes back to a
+    dead button that no amount of waiting fixes.
+
+    So connect replays the state instead of assuming the client saw it. After a
+    restart the lock is fresh, which reports `busy: False` -- exactly what an
+    unstuck client needs to hear.
+    """
+    return {"busy": is_busy(), "acting": _acting}
 
 
 def _await_player(char, tool_input, adv, socketio):
@@ -617,13 +641,19 @@ def handle_player_action(character_id: int, action_text: str, socketio):
         socketio.emit("dm_state", {"busy": True, "waiting": actor["name"]},
                       room="campaign")
 
+    global _acting
     with _turn_lock:
+        _acting = actor["name"]
         if socketio is not None:
             socketio.emit("dm_state", {"busy": True, "acting": actor["name"]},
                           room="campaign")
         try:
             _run_turn(actor, character_id, action_text, socketio)
         finally:
+            # Cleared inside the lock and before the broadcast, so a device
+            # connecting in this window is told the turn is over exactly once
+            # and never contradicts the broadcast.
+            _acting = None
             if socketio is not None:
                 socketio.emit("dm_state", {"busy": False}, room="campaign")
 

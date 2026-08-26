@@ -59,10 +59,10 @@ taking a call — without silencing the DM for everyone else.
 ### There's a wait after you act
 
 The DM's brain and its voice both run on one old laptop with no graphics card.
-After you submit an action, expect **roughly a minute and a half** before the
-narration arrives, and another twenty seconds or so before you hear it.
+After you submit an action, expect **two to three minutes** before the narration
+arrives, and another twenty to forty seconds before you hear it read aloud.
 
-It's thinking, not broken.
+It varies, and a slow one is not a stuck one. It's thinking, not broken.
 
 Everything else is instant — dice, hit points, conditions, whose turn it is.
 Only the storytelling is slow.
