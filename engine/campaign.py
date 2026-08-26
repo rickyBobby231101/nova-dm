@@ -7,7 +7,7 @@ pattern-matches on the action text. Observed in a real session, it returned the
 *identical* narration for two different actions, because from where it sat those
 two turns looked the same.
 
-So a campaign is seeded from a file. Four pieces, kept apart because they are
+So a campaign is seeded from a file. Five pieces, kept apart because they are
 spent in different places:
 
   * **premise** and **scene** are situation. Both passes need them -- deciding
@@ -16,6 +16,12 @@ spent in different places:
   * **cast** and **adversary** are colour. Only the narration pass can act on
     them, and on the two-pass local path the context is sent twice while the
     narration system prompt is sent once. Putting them there is half price.
+  * **places** is a gazetteer, and is spent differently from all three: it is
+    stored whole and sent one entry at a time. A world worth exploring is more
+    text than a turn can afford -- five locations is roughly 200 tokens, which
+    on this hardware is sixteen seconds added to every turn for four rooms the
+    party is not in. So the entry matching the current scene rides in the
+    context and the rest stay on disk. The world grows; the prompt does not.
 
 The file is Markdown rather than a table because the person editing it is
 writing prose about their own mythology, not filling in a form. Sections are
@@ -35,7 +41,9 @@ CAST_KEY = "cast"
 ADVERSARY_KEY = "adversary"
 SEED_KEY = "campaign_seed"  # which file was loaded, for `is_seeded` and debugging
 
-SECTIONS = ("premise", "scene", "cast", "adversary")
+PLACES_KEY = "places"
+
+SECTIONS = ("premise", "scene", "cast", "adversary", "places")
 
 
 def parse_seed(text: str) -> dict:
@@ -76,6 +84,7 @@ def load_seed(path) -> dict:
         ("cast", CAST_KEY),
         ("adversary", ADVERSARY_KEY),
         ("scene", chronicle.SCENE_KEY),
+        ("places", PLACES_KEY),
     ):
         if parsed.get(key):
             chronicle.set_value(state_key, parsed[key])
@@ -98,6 +107,75 @@ def get_adversary() -> str:
     return chronicle.get_value(ADVERSARY_KEY)
 
 
+def get_places_text() -> str:
+    return chronicle.get_value(PLACES_KEY)
+
+
+# `- **The Nave** -- description`, the same shape the cast is written in, because
+# the person editing the file should not have to remember two formats. The em
+# dash is what they will actually type; the ASCII pair is accepted so a seed
+# written in a plain editor still parses.
+_PLACE_LINE = re.compile(r"^\s*[-*]\s*\*\*(?P<name>[^*]+)\*\*\s*(?:--|—|-|:)?\s*(?P<body>.*)$")
+
+
+def places() -> dict:
+    """The gazetteer, name -> description. Empty when the seed has no places."""
+    found = {}
+    name = None
+    for line in get_places_text().splitlines():
+        m = _PLACE_LINE.match(line)
+        if m:
+            name = m.group("name").strip()
+            found[name] = m.group("body").strip()
+        elif name and line.strip():
+            # A description that wrapped onto the next line. Joining rather than
+            # dropping it means a long entry does not silently lose its ending.
+            found[name] = (found[name] + " " + line.strip()).strip()
+    return {k: v for k, v in found.items() if k}
+
+
+def place_for(scene: str) -> str:
+    """The one gazetteer entry the party is standing in, ready for the prompt.
+
+    Matched by name against the current scene, which the DM writes itself
+    through set_scene -- so walking into the Crypt and saying so is all it takes
+    for the Crypt's description to arrive on the next turn. Returns "" when the
+    scene names nowhere known, which is the common case once the DM starts
+    inventing rooms of its own, and is deliberately not an error: an invented
+    room is the DM doing its job.
+
+    Two things the naive substring match got wrong, both caught on real text:
+
+      * **The article is dropped.** The seed's own opening scene reads "The
+        Cathedral, upper terrace, an hour before dawn" while the gazetteer entry
+        is "The Upper Terrace" -- nobody writing prose repeats the "the", so
+        turn one matched nothing.
+      * **Word boundaries.** A bare "Nave" inside another word is not the Nave.
+
+    A scene can name more than one place -- the seed's own opening stands on the
+    terrace and mentions the Lyre Chamber below it -- so the **earliest** mention
+    wins. Prose says where you are before it says what you can see from there.
+    Ties break on the longer name, so "The Rose Window" is not shadowed by a
+    shorter entry whose name sits inside it.
+    """
+    scene = (scene or "").strip()
+    if not scene:
+        return ""
+    known = places()
+    # (what to look for, what to call it) -- the article is dropped for matching
+    # only; the entry is still presented under the name the seed gave it.
+    hits = []
+    for name in known:
+        needle = re.sub(r"^the\s+", "", name, flags=re.I)
+        found = re.search(rf"\b{re.escape(needle)}\b", scene, flags=re.I)
+        if found:
+            hits.append((found.start(), -len(needle), name))
+    if not hits:
+        return ""
+    _, _, name = min(hits)
+    return f"{name} -- {known[name]}"
+
+
 def is_seeded() -> bool:
     return bool(get_premise())
 
@@ -118,7 +196,7 @@ def clear() -> None:
     """Forget the world but keep the story. Used when swapping campaigns; the
     chronicle and the log are the party's history and are not this module's to
     throw away."""
-    for key in (PREMISE_KEY, CAST_KEY, ADVERSARY_KEY, SEED_KEY):
+    for key in (PREMISE_KEY, CAST_KEY, ADVERSARY_KEY, PLACES_KEY, SEED_KEY):
         chronicle.set_value(key, "")
 
 
@@ -133,5 +211,13 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     for name, body in loaded.items():
-        print(f"  {name:<10} {len(body):>5} chars (~{len(body)//4} tokens)")
+        note = ""
+        if name == "places":
+            # Reporting the whole gazetteer as a per-turn cost would scare the
+            # person editing it away from the one section they should feel free
+            # to grow.
+            entries = places()
+            biggest = max((len(v) for v in entries.values()), default=0)
+            note = f"  <- {len(entries)} entries, one sent per turn (largest ~{biggest//4} tok)"
+        print(f"  {name:<10} {len(body):>5} chars (~{len(body)//4} tokens){note}")
     print(f"\nseeded from {sys.argv[1]}")

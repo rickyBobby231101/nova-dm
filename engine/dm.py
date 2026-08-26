@@ -353,7 +353,9 @@ def award_xp(character_ids: list, amount: int, socketio, reason: str = None) -> 
 def _build_context(characters_at_table: list) -> str:
     # Memory first: the DM should read what has been happening before it reads
     # the current numbers, the same way a person picks a game back up.
-    memory = chronicle.context_block()
+    # Only the room they are standing in. The rest of the gazetteer stays on
+    # disk -- see engine.campaign for why the world is not sent whole.
+    memory = chronicle.context_block(place=campaign.place_for(chronicle.get_scene()))
     lines = [memory, "\nCharacters at the table:"] if memory else ["Characters at the table:"]
     for c in characters_at_table:
         lines.append(

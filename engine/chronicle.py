@@ -110,8 +110,14 @@ def _trim(lines: list, budget: int) -> list:
     return list(reversed(kept))
 
 
-def context_block(limit: int = DEFAULT_LIMIT, budget: int = DEFAULT_BUDGET) -> str:
-    """The memory half of the DM's prompt, or empty on a brand new campaign."""
+def context_block(limit: int = DEFAULT_LIMIT, budget: int = DEFAULT_BUDGET,
+                  place: str = "") -> str:
+    """The memory half of the DM's prompt, or empty on a brand new campaign.
+
+    `place` is the gazetteer entry for wherever the party is, passed in rather
+    than looked up here: engine.campaign owns the seed and already imports this
+    module, and one thin argument is cheaper than a cycle between them.
+    """
     sections = []
 
     # First, and never trimmed. The premise is not history -- it is the standing
@@ -131,7 +137,14 @@ def context_block(limit: int = DEFAULT_LIMIT, budget: int = DEFAULT_BUDGET) -> s
 
     scene = get_scene()
     if scene:
-        sections.append(f"Where the party is now: {scene}")
+        # The description rides with the scene line rather than in a section of
+        # its own, because the model is being told one thing -- where they are
+        # and what that place is -- and splitting it across the prompt invites
+        # it to answer about one and forget the other.
+        here = f"Where the party is now: {scene}"
+        if place:
+            here += f"\n{place}"
+        sections.append(here)
 
     entries = recent(limit)
     if entries:

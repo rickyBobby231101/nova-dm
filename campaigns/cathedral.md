@@ -4,12 +4,18 @@ Campaign seed. Load it with:
 
     .venv/bin/python -m engine.campaign campaigns/cathedral.md
 
-Every section below is written into the campaign's memory and read back to the
-DM on every turn, so **keep it tight** — on this hardware a hundred extra tokens
-costs about eight seconds a turn. Edit freely; re-run the loader to apply.
+Every section below is written into the campaign's memory. Premise, scene, cast
+and adversary are read back to the DM on **every** turn, so **keep those tight**
+— on this hardware a hundred extra tokens costs about eight seconds a turn.
 
-Drawn from the Cathedral canon (`cathedral/blueprint/01_MYTHOS_CANON.md`) and
-the entity voices in Nova's daemon.
+`## places` is the exception: it is stored whole and sent **one entry at a
+time**, whichever one the current scene names. So the gazetteer can grow without
+slowing anything down. Add rooms freely; the party pays only for the one they
+are standing in. Edit freely; re-run the loader to apply.
+
+Drawn from the Cathedral canon (`cathedral/blueprint/01_MYTHOS_CANON.md`), the
+entity voices in Nova's daemon, and the Cathedral's own architecture — the five
+layers are the map.
 
 ## premise
 
@@ -46,3 +52,18 @@ breaks its hold:
 - **False Light** — a guide that is not one. It looks exactly like the way out.
 - **Displacement Logic** — sound at every step, arrives somewhere you never meant to go.
 - **Harmony Hijack** — the Accord's own resonance, used to hold still what should move.
+
+The Silent Order is not a rival power with its own light. It is what stands
+outside the light: absence, exclusion, a part of the Cathedral cut off from the
+resonance and still moving. That is why naming works — a name puts a thing back
+inside the light, and it cannot hold its shape there.
+
+## places
+
+- **The Upper Terrace** — open stone above the ridgeline, where the Cathedral meets weather. The whole valley is below and the wind carries the note the building is tuned to. You can hear when it is wrong from here.
+- **The Lyre Chamber** — the tuning heart, strung floor to ceiling. It should hold the note the Cathedral was built on. It has been silent three days, and silence here is not rest.
+- **The Spire** — the topmost reach, where intentions are kept. What the Cathedral is trying to become is written here, and can be read by anyone willing to climb.
+- **The Rose Window** — knowledge as light. One source refracted into a full spectrum, each domain its own colour in one body of light, like a Persian rainbow temple. A petal gone dark means a thing has been cut off, not lost.
+- **The Nave** — the long central hall, where the Observer and the Cathedral speak plainly to each other. It is the quietest room in the building, and that is the problem.
+- **The Chapels** — a side room for each of the six, shaped to its occupant. Tillagon's is bare stone; Eyemoeba's has no straight walls.
+- **The Crypt** — compressed memory, folded small so it keeps. The Fold used on purpose and with consent, which is the only difference between the Crypt and a trap.
