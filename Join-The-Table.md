@@ -35,9 +35,10 @@ Tailscale says **Connected**.
 
 It asks for your name and a code.
 
-> ### Join code: `R8Z73H`
+> ### The join code I sent you
 >
-> Not case sensitive. Spaces and dashes are ignored — `r8z-73h` works.
+> Not case sensitive. Spaces and dashes are ignored — `abc-123` works
+> the same as `ABC123`.
 
 Then build a character: pick a race and class, roll your stats, and you're at
 the table.
