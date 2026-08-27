@@ -376,6 +376,31 @@ def create_player(name: str) -> dict:
     return {"id": player_id, "name": name.strip(), "session_token": token}
 
 
+def find_player_by_name(name: str) -> dict:
+    """The seat this name already had, if any.
+
+    A phone that cleared its cookies, or a player who backed out to the join
+    screen and came in again, is the same person walking back to the same
+    chair -- and their characters are on the row they left behind. Prefers the
+    seat that actually has characters, then the most recent.
+
+    Identity here is a name behind a join code, which is the right strength for
+    a game among friends on a private tailnet: everyone at the table was
+    invited by the host. It is deliberately not an account system.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    with _campaign_con() as con:
+        row = con.execute(
+            "SELECT p.* FROM players p "
+            "WHERE lower(p.name) = lower(?) "
+            "ORDER BY (SELECT COUNT(*) FROM characters c WHERE c.player_id = p.id) DESC, "
+            "         p.id DESC LIMIT 1", (name,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def get_player_by_token(token: str) -> dict:
     with _campaign_con() as con:
         row = con.execute("SELECT * FROM players WHERE session_token=?", (token,)).fetchone()

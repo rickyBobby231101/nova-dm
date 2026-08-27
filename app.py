@@ -48,6 +48,27 @@ app = Flask(__name__)
 app.secret_key = auth.secret_key()
 socketio = SocketIO(app, async_mode="threading")
 
+
+@app.after_request
+def _no_stale_pages(resp):
+    """Never let a browser cache a page of this app.
+
+    Every HTML page here is a live view of a shared table -- who is at it, what
+    your characters are, whose turn it is -- and none of it is safe to re-serve
+    from disk. The server was sending no cache headers at all, which leaves the
+    decision to the browser: a phone reported the page simply not reloading, and
+    a stale character list looks exactly like losing your party.
+
+    Audio is the deliberate exception. A narration clip is written once under a
+    generated id and never changes, so caching it saves re-downloading the DM's
+    voice over a phone connection.
+    """
+    if resp.mimetype == "text/html":
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
 OLLAMA_HOST = llm.OLLAMA_HOST
 
 CAMPAIGN_ROOM = "campaign"  # one shared campaign for now -- multi-campaign is out of scope
@@ -124,7 +145,15 @@ def do_join():
         session["at_the_table"] = True
         session.permanent = True
 
-    player = character.create_player(name)
+    # Reuse the seat rather than minting a new one. create_player() on every
+    # submit left a trail of empty player rows -- fifteen of them by the time
+    # anyone noticed -- each new one owning nothing, while the characters stayed
+    # behind on the row before it. Backing out to the join screen and coming in
+    # again was enough to lose your party.
+    player = _current_player() or character.find_player_by_name(name)
+    if not player:
+        player = character.create_player(name)
+
     resp = make_response(redirect(url_for("characters")))
     resp.set_cookie("session_token", player["session_token"], max_age=60 * 60 * 24 * 30)
     return resp
@@ -184,6 +213,14 @@ def import_character():
     upload = request.files.get("file")
     blob = upload.read().decode("utf-8", "replace") if upload and upload.filename else ""
     blob = blob or request.form.get("pasted", "")
+
+    # Submitting the form empty is the commonest way to press this button, and
+    # it used to fall through to the JSON parser and come back as "That isn't
+    # valid JSON (Expecting value, line 1)" -- which reads like the player's
+    # file is broken when they have not chosen one yet.
+    if not blob.strip():
+        return _render_characters(
+            player, "Choose a .nova-dm.json file, or paste one into the box.", 400)
 
     try:
         char = portable.import_character(portable.parse(blob), player["id"])

@@ -720,3 +720,64 @@ def test_connect_replays_turn_state_so_a_late_device_is_not_stuck():
     finally:
         dm._acting = None
         dm._turn_lock.release()
+
+
+def test_rejoining_returns_you_to_the_same_seat():
+    """Backing out to the join screen used to cost you your party.
+
+    `do_join` called create_player() on every submit, so each visit minted a
+    fresh player row owning nothing while the characters stayed behind on the
+    row before it. Fifteen rows had accumulated on the real table, twelve of
+    them empty, and the player's own druid was invisible to them.
+    """
+    first = app_module.app.test_client()
+    _join(first)
+    first.post("/characters", data={"name": "Mira", "race": "elf", "class": "druid",
+                                    "str": 10, "dex": 14, "con": 12,
+                                    "int": 11, "wis": 15, "cha": 10},
+               follow_redirects=True)
+
+    # A second device -- or the same one after backing out and clearing cookies.
+    again = app_module.app.test_client()
+    page = again.post("/join", data={"name": "Chazel", "join_code": auth.join_code()},
+                      follow_redirects=True)
+    assert b"Mira" in page.data, "the same name must come back to the same characters"
+
+
+def test_a_different_name_gets_its_own_seat():
+    """Reusing a seat by name must not hand one player another's party."""
+    a = app_module.app.test_client()
+    _join(a)
+    a.post("/characters", data={"name": "Mira", "race": "elf", "class": "druid",
+                                "str": 10, "dex": 14, "con": 12,
+                                "int": 11, "wis": 15, "cha": 10},
+           follow_redirects=True)
+
+    b = app_module.app.test_client()
+    page = b.post("/join", data={"name": "Jorlaan", "join_code": auth.join_code()},
+                  follow_redirects=True)
+    assert b"Mira" not in page.data
+
+
+def test_an_empty_import_says_what_to_do(client):
+    """Pressing IMPORT with nothing chosen is the commonest way to press it.
+
+    It used to fall through to the JSON parser and come back "That isn't valid
+    JSON (Expecting value, line 1)", which reads like the player's file is
+    broken when they have not picked one yet.
+    """
+    _join(client)
+    page = client.post("/characters/import", data={"pasted": "   "})
+    assert page.status_code == 400
+    body = page.data.decode()
+    assert "valid JSON" not in body
+    assert "Choose a .nova-dm.json file" in body
+
+
+def test_pages_are_never_cached(client):
+    """A phone reported the page not reloading. The server was sending no cache
+    headers at all, so the browser was free to keep serving a stale character
+    list -- which looks exactly like losing your party."""
+    _join(client)
+    page = client.get("/characters")
+    assert "no-store" in page.headers.get("Cache-Control", "")
