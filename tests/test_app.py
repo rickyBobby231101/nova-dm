@@ -781,3 +781,55 @@ def test_pages_are_never_cached(client):
     _join(client)
     page = client.get("/characters")
     assert "no-store" in page.headers.get("Cache-Control", "")
+
+
+def test_a_stale_cookie_on_an_empty_seat_does_not_outrank_the_name():
+    """Observed on Daniel's phone, 2026-09-05.
+
+    The browser still held an August cookie for one of the empty "Chazel"
+    rows. `do_join` read `_current_player() or find_player_by_name(name)`, so
+    the cookie short-circuited the lookup and the page said "No characters
+    yet" while his elf druid sat on another seat under the same name.
+
+    The cookie was right about who he was and wrong about which chair he had
+    ended up in. find_player_by_name already prefers the seat that actually
+    holds characters; it was simply never consulted once a cookie existed.
+    """
+    # A seat that owns a character.
+    owner = app_module.app.test_client()
+    _join(owner)
+    owner.post("/characters", data={"name": "Mira", "race": "elf", "class": "druid",
+                                    "str": 10, "dex": 14, "con": 12,
+                                    "int": 11, "wis": 15, "cha": 10},
+               follow_redirects=True)
+
+    # A stale browser: same name, its own cookie, no characters. It gets one by
+    # joining under a name nobody has used, then re-joining as "Chazel".
+    stale = app_module.app.test_client()
+    stale.post("/join", data={"name": "Ghost", "join_code": auth.join_code()},
+               follow_redirects=True)
+    page = stale.post("/join", data={"name": "Chazel"}, follow_redirects=True)
+
+    assert b"No characters yet" not in page.data, (
+        "an empty cookie seat still outranks the name — the player cannot "
+        "reach their own characters from that browser"
+    )
+    assert b"Mira" in page.data
+
+
+def test_a_cookie_on_a_seat_with_characters_is_never_moved():
+    """The correction must not evict someone who is already correctly seated.
+
+    Two players sharing a name is the case that would break: if the rule moved
+    any cookie to the name-matched seat, the second would be handed the first's
+    party. It only ever moves off a seat that holds nothing.
+    """
+    first = app_module.app.test_client()
+    _join(first)
+    first.post("/characters", data={"name": "Mira", "race": "elf", "class": "druid",
+                                    "str": 10, "dex": 14, "con": 12,
+                                    "int": 11, "wis": 15, "cha": 10},
+               follow_redirects=True)
+
+    page = first.post("/join", data={"name": "Chazel"}, follow_redirects=True)
+    assert b"Mira" in page.data, "a correctly seated player was moved"

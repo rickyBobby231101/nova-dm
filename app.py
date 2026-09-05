@@ -150,7 +150,26 @@ def do_join():
     # anyone noticed -- each new one owning nothing, while the characters stayed
     # behind on the row before it. Backing out to the join screen and coming in
     # again was enough to lose your party.
-    player = _current_player() or character.find_player_by_name(name)
+    player = _current_player()
+
+    # A cookie pointing at an empty seat must not outrank the name. Observed
+    # 2026-09-05 on Daniel's phone: it still held an August cookie for one of
+    # the empty "Chazel" rows, so `_current_player() or find_player_by_name()`
+    # short-circuited on the cookie and the page said "No characters yet" while
+    # his elf druid sat on player 15. The cookie was right about who he was and
+    # wrong about which chair he had ended up in.
+    #
+    # find_player_by_name already prefers the seat that actually has
+    # characters; it simply was never consulted once a cookie existed. So: keep
+    # the cookie's seat unless it is empty and a seat under the same name is
+    # not. Never move someone off a seat that holds characters.
+    if player and not character.list_characters_for_player(player["id"]):
+        by_name = character.find_player_by_name(name)
+        if by_name and by_name["id"] != player["id"] \
+                and character.list_characters_for_player(by_name["id"]):
+            player = by_name
+
+    player = player or character.find_player_by_name(name)
     if not player:
         player = character.create_player(name)
 
