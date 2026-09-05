@@ -29,6 +29,7 @@ from engine import (
     backup,
     character,
     chronicle,
+    companion,
     conditions,
     dice,
     dm,
@@ -497,6 +498,43 @@ def on_player_roll(data):
     says when.
     """
     handoff.answer(data.get("token"))
+
+
+@socketio.on("companion_turn")
+def on_companion_turn(data):
+    """Let an unclaimed entity take its turn.
+
+    Triggered rather than automatic, and one at a time. Measured on this box,
+    a companion takes 59-85 seconds to decide before the turn's own narration
+    call even begins — firing all seven every round would be a seven-minute
+    round, and the humans would be waiting on characters nobody is playing.
+
+    So the table calls on them: "Tillagon?" and Tillagon answers. That also
+    keeps the Observer initiating, which is the rule everywhere else in this
+    system.
+    """
+    character_id = data.get("character_id")
+    char = character.get_character(character_id)
+    if not char:
+        return
+    if not companion.is_automated(char):
+        emit("companion_error", {"error": f"{char['name']} is being played"})
+        return
+
+    socketio.emit("campaign_event",
+                  {"text": f"{char['name']} is deciding…", "kind": "action"},
+                  room=CAMPAIGN_ROOM)
+
+    action_text = companion.decide(char)
+    if not action_text:
+        socketio.emit("campaign_event",
+                      {"text": f"{char['name']} holds.", "kind": "action"},
+                      room=CAMPAIGN_ROOM)
+        return
+
+    # The same path a player's action takes. A companion turn is a real turn;
+    # a parallel one would be a second place for turn logic to drift.
+    dm.handle_player_action(character_id, action_text, socketio)
 
 
 @socketio.on("submit_action")

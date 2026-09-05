@@ -802,6 +802,36 @@ def chain():
     return [n.strip() for n in override.split(",")] if override else list(DEFAULT_CHAIN)
 
 
+def simple_ask(prompt: str, model: str = None, timeout: float = 120.0) -> str:
+    """One prompt, one short answer, no tools and no turn machinery.
+
+    run_turn() exists to narrate a turn: it carries tools, a tool loop, a
+    provider chain and per-pass prompts. A companion deciding what it does next
+    needs none of that — it needs one sentence — and routing that through the
+    tool loop would pay for a whole apparatus to get a line of dialogue.
+
+    Local only, deliberately. This runs once per automated party member per
+    turn, so it must be free; a cloud call here would bill the table for
+    everyone who is not at it.
+    """
+    import json as _json
+    import urllib.request
+
+    payload = {
+        "model": model or os.environ.get("NOVA_DM_LLM_MODEL") or "llama3.2:3b",
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+    }
+    req = urllib.request.Request(
+        f"{OLLAMA_HOST}/api/chat",
+        data=_json.dumps(payload).encode(),
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = _json.loads(resp.read())
+    return (data.get("message") or {}).get("content", "").strip()
+
+
 def run_turn(system, user_message, tools, execute, emit, on_provider=None, defaults=None,
              prompts=None):
     """Ask each candidate voice in turn until one narrates the turn.
