@@ -329,7 +329,7 @@ def play():
     char = character.get_character(character_id) if character_id else None
     if not char or char["player_id"] != player["id"]:
         return redirect(url_for("characters"))
-    return render_template("player.html", player=player, character=char)
+    return render_template("player.html", companions=character.list_npcs(), player=player, character=char)
 
 
 @app.route("/dm", methods=["GET", "POST"])

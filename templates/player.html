@@ -127,6 +127,33 @@
     <div id="enc-order"></div>
   </div>
 
+  {% if companions %}
+  <!-- The Cathedral's entities. Anything nobody has claimed is played by the
+       table; CALL ON asks it to take a turn. Triggered rather than automatic
+       because a companion takes 60-90s to decide on this hardware, and firing
+       all seven every round would leave the humans waiting on characters
+       nobody is playing. -->
+  <div class="card">
+    <h2 class="card-head">
+      The Party
+      <span class="meta">{{ companions|length }} auto-played</span>
+    </h2>
+    <div class="sub" style="margin:-4px 0 10px; font-size:12px; color:#9098ac">
+      The DM plays these until someone takes them at
+      <a href="/characters" style="color:#8a94ff">SWITCH</a>.
+    </div>
+    {% for c in companions %}
+    <div class="row" style="justify-content:space-between; margin-bottom:6px">
+      <span style="font-size:13px">
+        <b>{{ c.name }}</b>
+        <span style="color:#9098ac"> · {{ c.class|capitalize }} · {{ c.current_hp }}/{{ c.max_hp }} HP</span>
+      </span>
+      <button class="mini" onclick="callOn({{ c.id }}, this)">CALL ON</button>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <div class="card">
     <h2 class="card-head">
       Campaign Feed
@@ -234,6 +261,22 @@
     if (data.error) { addFeedEntry('Error: ' + data.error); return; }
     const advTag = data.adv ? ` (${data.adv})` : '';
     addFeedEntry(`${data.character} rolls ${data.ability.toUpperCase()}${advTag}: ${data.d20}+${data.modifier}=${data.total}`);
+  });
+
+  // An automated party member takes its turn. The same round trip a player's
+  // action makes, so the button latches for the same reason and is released by
+  // the same dm_state event.
+  function callOn(characterId, btn) {
+    btn.disabled = true;
+    btn.textContent = 'THINKING…';
+    socket.emit('companion_turn', {character_id: characterId});
+  }
+
+  socket.on('companion_error', (data) => {
+    addFeedEntry(`(${data.error})`);
+    document.querySelectorAll('button.mini').forEach((b) => {
+      if (b.textContent === 'THINKING…') { b.disabled = false; b.textContent = 'CALL ON'; }
+    });
   });
 
   function submitAction() {
@@ -357,6 +400,13 @@
       note.style.display = 'none';
       btn.disabled = false;
       btn.textContent = 'SUBMIT ACTION';
+      // Release the CALL ON buttons too. They latch on the same round trip and
+      // must clear on the same signal — a companion button left disabled after
+      // a turn is the stale-latch bug this project has already fixed three
+      // times in other clothes.
+      document.querySelectorAll('button.mini').forEach((b) => {
+        if (b.textContent === 'THINKING…') { b.disabled = false; b.textContent = 'CALL ON'; }
+      });
     }
   });
 
