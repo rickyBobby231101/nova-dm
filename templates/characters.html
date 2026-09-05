@@ -73,11 +73,45 @@
         </label>
       </form>
       <a class="export" href="/character/{{ c.id }}/export" title="Download this character as JSON">EXPORT</a>
+      {% if c.name in ["Tillagon","Eyemoeba","Phoenix","Zorya","Jorlaan","The Weaver","Lucid"] %}
+      <form method="post" action="/character/{{ c.id }}/release">
+        <button class="export" type="submit" title="Hand this entity back to the Cathedral">RELEASE</button>
+      </form>
+      {% endif %}
     </div>
   </div>
   {% else %}
   <div class="sub">No characters yet.</div>
   {% endfor %}
+
+  {% if npcs %}
+  <div class="card">
+    <h2>THE CATHEDRAL</h2>
+    <div class="sub" style="margin:-6px 0 14px">
+      The DM voices these until someone plays them. Take one and it becomes yours.
+    </div>
+    {% for c in npcs %}
+    <div class="char-card">
+      <span class="char-link" style="cursor:default">
+        {% if c.avatar %}
+        <img class="portrait" src="/avatar/{{ c.avatar }}" alt="{{ c.name }}">
+        {% else %}
+        <span class="portrait initials">{{ c.name | initials }}</span>
+        {% endif %}
+        <span class="char-text">
+          <span class="char-name">{{ c.name }}</span>
+          <span class="char-meta">{{ c.race|capitalize }} {{ c.class|capitalize }} · Level {{ c.level }} · {{ c.current_hp }}/{{ c.max_hp }} HP</span>
+        </span>
+      </span>
+      <div class="char-actions">
+        <form method="post" action="/character/{{ c.id }}/claim">
+          <button class="mini-btn" type="submit">PLAY AS</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
 
   <div class="card">
     <h2>CREATE CHARACTER</h2>

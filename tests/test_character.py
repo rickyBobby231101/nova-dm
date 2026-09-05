@@ -275,3 +275,91 @@ def test_ordinary_damage_is_unaffected():
     char = _leveller()
     before = character.get_character(char["id"])["current_hp"]
     assert character.apply_damage(char["id"], 3)["current_hp"] == before - 3
+
+
+# ── The Cathedral's entities are NPCs until somebody plays them ─────────────
+
+def _seat_entities():
+    """Two entities parked on the Cathedral seat, as the seeder makes them."""
+    seat = character.create_player(character.NPC_SEAT_NAME)
+    a = character.create_character(seat["id"], "Tillagon", "dragonborn", "paladin",
+                                   dict(str=16, dex=10, con=16, int=11, wis=13, cha=15))
+    b = character.create_character(seat["id"], "Zorya", "half-elf", "ranger",
+                                   dict(str=10, dex=17, con=12, int=12, wis=16, cha=11))
+    return seat, a, b
+
+
+def test_unclaimed_entities_are_npcs():
+    seat, a, b = _seat_entities()
+    assert {c["name"] for c in character.list_npcs()} == {"Tillagon", "Zorya"}
+
+
+def test_claiming_moves_an_entity_to_the_player():
+    seat, a, b = _seat_entities()
+    me = character.create_player("Chazel")
+
+    r = character.claim_character(a["id"], me["id"])
+    assert r["ok"] is True
+    assert {c["name"] for c in character.list_characters_for_player(me["id"])} == {"Tillagon"}
+    assert {c["name"] for c in character.list_npcs()} == {"Zorya"}
+
+
+def test_an_entity_someone_is_playing_cannot_be_taken():
+    """The same failure as the seat cookie, in a different costume: one player
+    must never end up holding another's character."""
+    seat, a, b = _seat_entities()
+    first = character.create_player("Chazel")
+    second = character.create_player("Jordan")
+
+    character.claim_character(a["id"], first["id"])
+    r = character.claim_character(a["id"], second["id"])
+
+    assert "error" in r and "already being played" in r["error"]
+    assert character.get_character(a["id"])["player_id"] == first["id"]
+
+
+def test_releasing_returns_it_to_the_cathedral():
+    seat, a, b = _seat_entities()
+    me = character.create_player("Chazel")
+    character.claim_character(a["id"], me["id"])
+
+    r = character.release_character(a["id"], me["id"])
+    assert r["ok"] is True
+    assert {c["name"] for c in character.list_npcs()} == {"Tillagon", "Zorya"}
+
+
+def test_you_cannot_release_a_character_you_made_yourself():
+    """The Cathedral only takes back what is the Cathedral's."""
+    _seat_entities()
+    me = character.create_player("Chazel")
+    mine = character.create_character(me["id"], "Mira", "elf", "druid",
+                                      dict(str=10, dex=14, con=12, int=11, wis=15, cha=10))
+    assert "error" in character.release_character(mine["id"], me["id"])
+
+
+def test_you_cannot_release_someone_elses_entity():
+    seat, a, b = _seat_entities()
+    first = character.create_player("Chazel")
+    second = character.create_player("Jordan")
+    character.claim_character(a["id"], first["id"])
+    assert "error" in character.release_character(a["id"], second["id"])
+
+
+def test_claiming_preserves_the_sheet():
+    """An entity picked up mid-campaign keeps whatever has happened to it."""
+    seat, a, b = _seat_entities()
+    me = character.create_player("Chazel")
+    before = character.get_character(a["id"])
+    character.claim_character(a["id"], me["id"])
+    after = character.get_character(a["id"])
+    for field in ("name", "race", "class", "level", "max_hp", "ac"):
+        assert before[field] == after[field]
+
+
+def test_a_name_is_found_however_it_is_typed():
+    """Friends must get their own characters back without anyone's help.
+    A phone that autocapitalises, or does not, must reach the same seat."""
+    me = character.create_player("Chazel")
+    for typed in ("Chazel", "chazel", "CHAZEL", "  Chazel  "):
+        found = character.find_player_by_name(typed)
+        assert found and found["id"] == me["id"], f"{typed!r} did not find the seat"

@@ -202,9 +202,40 @@ def characters():
 def _render_characters(player, import_error: str = None, status: int = 200):
     chars = character.list_characters_for_player(player["id"])
     html = render_template("characters.html", player=player, characters=chars,
+                           npcs=character.list_npcs(),
                            classes=character.list_srd_classes(),
                            races=character.list_srd_races(), import_error=import_error)
     return (html, status) if import_error else html
+
+
+@app.route("/character/<int:character_id>/claim", methods=["POST"])
+def claim_character(character_id):
+    """Take over one of the Cathedral's entities.
+
+    They are NPCs the DM voices until somebody plays them. Claiming moves the
+    character off the Cathedral seat and onto yours; nothing about the sheet
+    changes, so an entity picked up mid-campaign keeps whatever has happened
+    to it.
+    """
+    player = _current_player()
+    if not player:
+        return redirect(url_for("join"))
+    r = character.claim_character(character_id, player["id"])
+    if "error" in r:
+        return _render_characters(player, import_error=r["error"], status=409)
+    return redirect(url_for("play", character_id=character_id))
+
+
+@app.route("/character/<int:character_id>/release", methods=["POST"])
+def release_character(character_id):
+    """Hand an entity back to the Cathedral, and to the DM's voice."""
+    player = _current_player()
+    if not player:
+        return redirect(url_for("join"))
+    r = character.release_character(character_id, player["id"])
+    if "error" in r:
+        return _render_characters(player, import_error=r["error"], status=409)
+    return redirect(url_for("characters"))
 
 
 @app.route("/character/<int:character_id>/export")

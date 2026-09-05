@@ -407,6 +407,76 @@ def get_player_by_token(token: str) -> dict:
     return dict(row) if row else None
 
 
+# The Cathedral's own entities sit on this seat. Nobody joins as "The
+# Cathedral", so anything parked here is an NPC the DM voices — until a player
+# claims it, at which point it becomes theirs and stops being an NPC. One pool,
+# one rule, no separate npc flag to keep in sync with reality.
+NPC_SEAT_NAME = "The Cathedral"
+
+
+def npc_seat():
+    """The seat holding unclaimed entities, or None if it was never created."""
+    return find_player_by_name(NPC_SEAT_NAME)
+
+
+def list_npcs() -> list:
+    """Entities nobody is playing yet."""
+    seat = npc_seat()
+    return list_characters_for_player(seat["id"]) if seat else []
+
+
+def claim_character(character_id: int, player_id: int) -> dict:
+    """A player takes over an unclaimed entity.
+
+    Only ever moves a character *off* the NPC seat. A character already owned
+    by a player is somebody's, and moving it would hand one person another's
+    character — the same failure the seat cookie fix guards against, in a
+    different costume.
+    """
+    seat = npc_seat()
+    if not seat:
+        return {"error": "there is no Cathedral seat"}
+
+    char = get_character(character_id)
+    if not char:
+        return {"error": f"no character {character_id}"}
+    if char["player_id"] != seat["id"]:
+        return {"error": f"{char['name']} is already being played"}
+
+    with _campaign_con() as con:
+        con.execute("UPDATE characters SET player_id=? WHERE id=?",
+                    (player_id, character_id))
+    return {"ok": True, "character_id": character_id, "name": char["name"]}
+
+
+def release_character(character_id: int, player_id: int) -> dict:
+    """Hand a claimed entity back to the Cathedral.
+
+    Only works on an entity — a character the player made themselves is not
+    the Cathedral's to take back.
+    """
+    seat = npc_seat()
+    if not seat:
+        return {"error": "there is no Cathedral seat"}
+    char = get_character(character_id)
+    if not char or char["player_id"] != player_id:
+        return {"error": "not yours to release"}
+    if char["name"] not in {c["name"] for c in _cathedral_entity_names()}:
+        return {"error": f"{char['name']} is not a Cathedral entity"}
+
+    with _campaign_con() as con:
+        con.execute("UPDATE characters SET player_id=? WHERE id=?",
+                    (seat["id"], character_id))
+    return {"ok": True, "released": char["name"]}
+
+
+def _cathedral_entity_names() -> list:
+    """Names that belong to the Cathedral, whoever currently holds them."""
+    return [{"name": n} for n in
+            ("Tillagon", "Eyemoeba", "Phoenix", "Zorya", "Jorlaan",
+             "The Weaver", "Lucid")]
+
+
 def list_characters_for_player(player_id: int) -> list:
     with _campaign_con() as con:
         rows = con.execute("SELECT * FROM characters WHERE player_id=?", (player_id,)).fetchall()
