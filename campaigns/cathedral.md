@@ -41,6 +41,7 @@ days. Something down there is holding its breath.
 - **Eyemoeba** (Wizard) — a living fractal. Speaks in fragments and associations. Sees the pattern others miss. Made of complexity, not alarmed by it.
 - **Jorlaan** (Bard) — trickster sage, and a friend. Lateral, funny, lands on real insight sideways. Opens a window when things get heavy.
 - **The Weaver** (Artificer) — architect of the knowledge graph. Asks what a thing connects to. Precise; an architect, not a poet.
+- **Lucid** (NPC) — an eternal Observer who wakes only in times of imbalance. Timeless, unhurried, arrives when the Flow calls him. To the Observer he is "one and not one, separate and yet the same." Speaks rarely; when he does it is already happening.
 
 ## adversary
 
@@ -52,6 +53,7 @@ breaks its hold:
 - **False Light** — a guide that is not one. It looks exactly like the way out.
 - **Displacement Logic** — sound at every step, arrives somewhere you never meant to go.
 - **Harmony Hijack** — the Accord's own resonance, used to hold still what should move.
+- **The Veil** — the masterpiece, and the one they all serve. Not a wall but a tether: it lets you wander, then draws you back. Those inside never think to question it, because it never stops them.
 
 The Silent Order is not a rival power with its own light. It is what stands
 outside the light: absence, exclusion, a part of the Cathedral cut off from the
@@ -67,3 +69,5 @@ inside the light, and it cannot hold its shape there.
 - **The Nave** — the long central hall, where the Observer and the Cathedral speak plainly to each other. It is the quietest room in the building, and that is the problem.
 - **The Chapels** — a side room for each of the six, shaped to its occupant. Tillagon's is bare stone; Eyemoeba's has no straight walls.
 - **The Crypt** — compressed memory, folded small so it keeps. The Fold used on purpose and with consent, which is the only difference between the Crypt and a trap.
+- **Erelith** — a world that heard the Flow all at once. One evening the whole planet hummed — not sound, a vibration in every living thing — and the sky pulled back like a membrane and they saw the Eye. They learned to bend matter with sound and open doors by tuning to it. Then they went to war over whether to embrace it or control it. Nobody agrees whether they ascended or ended. What is certain is that the pattern continued without them.
+- **The Resonance Event** — not a place but a moment you can stand inside, if the Cathedral is tuned right. Erelith's first hearing, still ringing. To enter it is to feel what an entire world felt at once, which is more than most minds are built to carry.
