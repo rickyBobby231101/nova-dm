@@ -836,9 +836,9 @@ def run_turn(system, user_message, tools, execute, emit, on_provider=None, defau
              prompts=None):
     """Ask each candidate voice in turn until one narrates the turn.
 
-    A voice that has already emitted narration is never abandoned mid-turn --
-    handing over at that point would narrate the same action twice, in two
-    different styles, which is worse for the table than an honest error.
+    A voice that has emitted narration or attempted a tool is never abandoned
+    mid-turn. A fallback starts the action from scratch, so it could narrate
+    twice or repeat a roll, damage, or scene change that already happened.
     """
     last_error = None
 
@@ -856,6 +856,15 @@ def run_turn(system, user_message, tools, execute, emit, on_provider=None, defau
             continue
 
         spoken = []
+        tool_attempted = False
+
+        def execute_once_started(tool_name, tool_input):
+            nonlocal tool_attempted
+            # Mark before calling: a tool may mutate state and then raise.
+            # Even a read-only tool commits this turn to its current voice;
+            # distinguishing mutating tools belongs to a future tool contract.
+            tool_attempted = True
+            return execute(tool_name, tool_input)
 
         def record(text, _spoken=spoken):
             _spoken.append(text)
@@ -864,12 +873,15 @@ def run_turn(system, user_message, tools, execute, emit, on_provider=None, defau
         if on_provider:
             on_provider(name)
         try:
-            provider.run_turn(system, user_message, tools, execute, record)
+            provider.run_turn(system, user_message, tools, execute_once_started, record)
             return Outcome(name)
         except TurnExhausted as e:
             return Outcome(name, str(e))
         except ProviderUnavailable as e:
             last_error = f"{name}: {e}"
+            if tool_attempted:
+                return Outcome(name, "the DM's voice falters after an engine action; "
+                               f"the turn was not replayed: {e}")
             if spoken:
                 return Outcome(name, f"the DM's voice falters: {e}")
             _demoted.add(name)

@@ -209,6 +209,53 @@ def test_voice_that_already_narrated_is_never_handed_over(monkeypatch):
     assert backup.ran is False
 
 
+def test_failure_after_a_tool_does_not_replay_the_turn(monkeypatch):
+    """Damage already applied cannot be repeated by the fallback narrator."""
+    damage = []
+
+    def apply_then_fail(execute, emit):
+        execute("damage", {"amount": 3})
+        raise llm.ProviderUnavailable("narration timed out")
+
+    def replay(execute, emit):
+        execute("damage", {"amount": 3})
+        emit("The blow lands.")
+
+    _provider(monkeypatch, "flaky", script=[apply_then_fail])
+    backup = _provider(monkeypatch, "backup", script=[replay])
+    _chain(monkeypatch, "flaky", "backup")
+    outcome = llm.run_turn("sys", "msg", TOOLS,
+                           lambda name, args: damage.append(args["amount"]),
+                           lambda text: None)
+
+    assert damage == [3]
+    assert outcome.provider == "flaky"
+    assert "not replayed" in outcome.error
+    assert backup.ran is False
+
+
+def test_tool_failure_after_mutation_does_not_hand_over(monkeypatch):
+    """A tool can change state before it raises; mark the attempt first."""
+    changed = []
+
+    def call(execute, emit):
+        execute("damage", {"amount": 3})
+
+    def execute(name, args):
+        changed.append(args["amount"])
+        raise llm.ProviderUnavailable("failure after write")
+
+    _provider(monkeypatch, "first", script=[call])
+    backup = _provider(monkeypatch, "backup", script=[call])
+    _chain(monkeypatch, "first", "backup")
+    outcome = llm.run_turn("sys", "msg", TOOLS, execute, lambda text: None)
+
+    assert changed == [3]
+    assert outcome.provider == "first"
+    assert "not replayed" in outcome.error
+    assert backup.ran is False
+
+
 def test_turn_exhausted_does_not_demote_the_voice(monkeypatch):
     """Running long is the turn's fault, not the voice's -- demoting here would
     cost the table a perfectly good DM for the rest of the session."""
