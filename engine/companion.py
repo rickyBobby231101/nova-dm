@@ -36,6 +36,17 @@ RECENT_BEATS = 4
 MAX_WORDS = 30
 
 
+def _dm_model() -> str:
+    """Whatever model the DM is narrating with.
+
+    Asked rather than configured, so the two can never drift apart again.
+    """
+    try:
+        return llm.build("ollama").model
+    except Exception:
+        return "llama3.2:1b"
+
+
 def is_automated(char: dict) -> bool:
     """True when nobody is playing this character."""
     seat = character.npc_seat()
@@ -101,9 +112,66 @@ def decide(char: dict, recent: list = None, ask=None) -> str:
     """
     recent = recent if recent is not None else chronicle.recent(RECENT_BEATS)
     ask = ask or llm.simple_ask
+    prompt = build_prompt(char, recent)
+
+    def _call():
+        # The DM's own model, not simple_ask's default. They differed —
+        # llama3.2:1b for the DM, llama3.2:3b here — and with about 1 GB free
+        # on this box only one fits at a time, so every companion turn evicted
+        # the DM's model and reloaded it. That is why Tillagon took 126s and
+        # then returned nothing, while Jorlaan on a warm model took 31.
+        try:
+            return ask(prompt, model=_dm_model())
+        except TypeError:
+            # An `ask` that takes no model — the injectable used in tests, and
+            # any caller passing a plain callable.
+            return ask(prompt)
+
     try:
-        out = ask(build_prompt(char, recent))
+        out = _call()
     except Exception:
-        # A companion that cannot think must not stop the table.
+        # A model that is down, slow or missing. A companion that cannot think
+        # must not stop the table. Only this is swallowed: a wrong signature
+        # is handled above rather than disappearing into silence, which is how
+        # a broken companion used to look merely quiet.
         return ""
     return trim(out)
+
+
+# ── auto-play ───────────────────────────────────────────────────────────────
+# "the dm is supposed to auto play with the characters until someone takes the
+# wheel" — Daniel, 2026-09-05.
+#
+# One companion reacts per player turn, rotating, rather than all of them.
+# Measured on this box after the model fix: 9-29s to decide, plus the turn's
+# own narration. Seven companions every round would be several minutes of
+# waiting on characters nobody is playing, and the humans would stop taking
+# turns. One keeps the party feeling alive at the cost of a single extra beat.
+#
+# Rotation is by name so it survives restarts without storing anything: the
+# party takes it in turns in a stable order.
+
+AUTO_PLAY = True
+
+_rotation = 0
+
+
+def next_up(exclude_name: str = None) -> dict:
+    """The companion whose turn it is to react, or None.
+
+    `exclude_name` skips the character who just acted, so a claimed entity
+    never prompts itself.
+    """
+    global _rotation
+    party = [c for c in automated_party() if c["name"] != exclude_name]
+    if not party:
+        return None
+    party.sort(key=lambda c: c["name"])
+    pick = party[_rotation % len(party)]
+    _rotation += 1
+    return pick
+
+
+def reset_rotation():
+    global _rotation
+    _rotation = 0

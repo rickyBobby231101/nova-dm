@@ -631,7 +631,8 @@ def _await_player(char, tool_input, adv, socketio):
     socketio.emit("roll_prompt_done", {"token": pending.token}, room="campaign")
 
 
-def handle_player_action(character_id: int, action_text: str, socketio):
+def handle_player_action(character_id: int, action_text: str, socketio,
+                         auto_follow: bool = True):
     actor = character.get_character(character_id)
     if not actor:
         return
@@ -658,6 +659,32 @@ def handle_player_action(character_id: int, action_text: str, socketio):
             _acting = None
             if socketio is not None:
                 socketio.emit("dm_state", {"busy": False}, room="campaign")
+
+    # The party answers. Outside the lock deliberately: a companion turn takes
+    # the lock itself, and holding it here would deadlock the table on its own
+    # party members.
+    if auto_follow and socketio is not None:
+        _auto_follow(actor["name"], socketio)
+
+
+def _auto_follow(after_name: str, socketio):
+    """One automated party member reacts to the turn that just happened.
+
+    Only one, and only when nobody is playing them. The whole party reacting
+    to every action would be several minutes of narration between each of the
+    humans' turns.
+    """
+    from engine import companion
+    if not companion.AUTO_PLAY:
+        return
+    nxt = companion.next_up(exclude_name=after_name)
+    if not nxt:
+        return
+    action = companion.decide(nxt)
+    if not action:
+        return
+    # A real turn, through the same door, so it queues behind anything else.
+    handle_player_action(nxt["id"], action, socketio, auto_follow=False)
 
 
 def _run_turn(actor, character_id: int, action_text: str, socketio):

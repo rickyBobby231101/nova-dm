@@ -36,7 +36,12 @@ def _join(client, name="Chazel"):
 
 
 def _become_dm(client):
-    return client.post("/dm", data={"dm_password": auth.dm_password()})
+    """Kept as a no-op so older tests still read.
+
+    There is no second door as of 2026-09-05: being at the table is being the
+    DM. The helper stays rather than being deleted from a dozen call sites, and
+    says so here so nobody concludes a password still exists."""
+    return None
 
 
 def _socket_client():
@@ -253,36 +258,42 @@ def test_socket_refuses_a_browser_that_never_joined():
     assert not stranger.is_connected()
 
 
-def test_the_dm_events_still_need_the_password_even_though_the_view_does_not():
-    """The view is public to the table; the authority is not. Nova drives, but
-    a player must not be able to start fights because they can watch one."""
+def test_the_table_can_drive_the_dm_events():
+    """As of 2026-09-05 the join code is the only door.
+
+    There used to be a second password on the manual controls. Daniel: "we
+    don't need a password." The threat model is a private tailnet among
+    invited friends, and a second credential only meant the one person who
+    could unstick a stalled turn had to be at the laptop that knew it.
+
+    So anyone at the table can now drive them — which is the point: someone
+    else keeps the game moving while Daniel plays rather than runs it."""
     player = _socket_client()  # join code only
     player.get_received()
 
-    player.emit("dm_award_xp", {"amount": 10000})
+    player.emit("dm_award_xp", {"amount": 10})
 
-    assert "dm_denied" in [r["name"] for r in player.get_received()]
+    assert "dm_denied" not in [r["name"] for r in player.get_received()]
 
 
-def test_wrong_dm_password_is_refused(client):
+def test_the_dm_screen_no_longer_challenges(client):
+    """The second password is gone; the screen opens for anyone at the table."""
     _join(client)
-    resp = client.post("/dm", data={"dm_password": "NOPE"})
+    resp = client.get("/dm")
 
-    assert resp.status_code == 403
-    assert b"Encounter Builder" not in resp.data
+    assert resp.status_code == 200
+    assert b"Encounter Builder" in resp.data
 
 
-def test_a_player_cannot_drive_the_dm_events():
-    """The DM screen is only buttons; this is where the authority actually is.
-    A player who knows the join code must not be able to award themselves levels."""
-    player = _socket_client()  # joined, but never gave the DM password
-    player.get_received()
+def test_a_stranger_still_cannot_drive_the_dm_events():
+    """The join code remains the boundary that matters.
 
-    player.emit("dm_award_xp", {"amount": 10000})
-
-    events = [r["name"] for r in player.get_received()]
-    assert "dm_denied" in events
-    assert "campaign_event" not in events, "a player awarded themselves XP"
+    Removing the second password widened who at the table may drive the game.
+    It did not open it to anyone who never joined — a socket that never gave
+    the join code is refused at connect and never reaches these events at all."""
+    stranger = SocketIOTestClient(app_module.app, app_module.socketio,
+                                  flask_test_client=app_module.app.test_client())
+    assert not stranger.is_connected(), "an unjoined socket reached the table"
 
 
 def test_dm_can_run_a_fight_over_sockets():
@@ -637,20 +648,23 @@ def test_anyone_with_the_join_code_can_watch_the_table():
     assert b"The Table" in resp.data
 
 
-def test_a_spectator_is_not_offered_the_controls():
+def test_everyone_at_the_table_is_offered_the_controls():
+    """The escape hatch is now open to whoever is present, not to whoever knows
+    a second secret. The hatch itself stays: it is the only way to move the
+    game when the model stalls, and deleting a working escape hatch because it
+    is not the happy path is how an evening ends early."""
     client = app_module.app.test_client()
     _join(client)
 
     resp = client.get("/dm")
 
-    assert b"Encounter Builder" not in resp.data
-    assert b"AWARD TO CHECKED PARTY" not in resp.data
-    assert b"take manual control" in resp.data, "the escape hatch is still findable"
+    assert b"Encounter Builder" in resp.data
 
 
-def test_the_controls_come_back_with_the_dm_password():
-    """Deleting a working escape hatch because it is not the happy path is how
-    an evening ends early."""
+def test_the_manual_override_is_still_there():
+    """The password went; the escape hatch did not. It is the only way to move
+    the game when the model stalls, and deleting a working escape hatch because
+    it is not the happy path is how an evening ends early."""
     client = app_module.app.test_client()
     _join(client)
     _become_dm(client)

@@ -101,7 +101,25 @@ def _at_the_table() -> bool:
 
 
 def _is_dm() -> bool:
-    return bool(session.get("is_dm"))
+    """Anyone at the table can drive the manual controls.
+
+    There used to be a second password for this. Daniel, 2026-09-05: "we don't
+    need a password." The threat model is a private tailnet among invited
+    friends, and the join code is already the door — a second credential only
+    meant that the one person who could unstick a stalled turn had to be at the
+    laptop that knew it.
+
+    The controls themselves stay. They are the escape hatch for when the model
+    stalls or gets something badly wrong, and deleting a working escape hatch
+    because it is not the happy path is how an evening ends early. What is gone
+    is the extra lock on them, not the hatch.
+
+    Consequence, stated plainly: anyone with the join code can now heal, damage,
+    award XP, and end encounters. At a table of invited friends that is a
+    feature — it is how someone else keeps the game moving when Daniel is
+    playing rather than running it.
+    """
+    return _at_the_table()
 
 
 def _current_player():
@@ -341,18 +359,12 @@ def dm_screen():
     the party and who is actually connected. Anyone with the join code can
     watch, because there is no longer a privileged human whose screen this is.
 
-    The manual controls are still here, behind the DM password, and stay that
-    way deliberately. They are the only way to move the game when the model
-    stalls or gets something badly wrong, and deleting a working escape hatch
-    because it is not the happy path is how an evening ends early.
+    The manual controls are still here, and stay that way deliberately. They
+    are the only way to move the game when the model stalls or gets something
+    badly wrong, and deleting a working escape hatch because it is not the
+    happy path is how an evening ends early. As of 2026-09-05 they are open to
+    anyone at the table rather than behind a second password — see _is_dm.
     """
-    if request.method == "POST" and not _is_dm():
-        if not auth.check_dm_password(request.form.get("dm_password", "")):
-            return render_template("dm_login.html", error="Wrong password."), 403
-        session["is_dm"] = True
-        session.permanent = True
-        return redirect(url_for("dm_screen"))
-
     return render_template("dm.html", encounter=encounter.get_state(),
                           characters=character.list_active_characters(),
                           conditions=encounter.list_conditions(),

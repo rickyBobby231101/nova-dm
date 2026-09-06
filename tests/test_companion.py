@@ -39,7 +39,11 @@ def clean_campaign_db():
 
 
 def _entity(name="Tillagon"):
-    seat = character.create_player(character.NPC_SEAT_NAME)
+    # Reuse the seat. create_player() on every call minted a *new* Cathedral
+    # row each time, so three entities landed on three different seats and
+    # npc_seat() only found one of them — the rotation looked broken when the
+    # fixture was.
+    seat = character.npc_seat() or character.create_player(character.NPC_SEAT_NAME)
     return character.create_character(
         seat["id"], name, "dragonborn", "paladin",
         dict(str=16, dex=10, con=16, int=11, wis=13, cha=15))
@@ -126,3 +130,46 @@ class TestThePromptCarriesWhoTheyAre:
     def test_recent_beats_are_included(self):
         p = companion.build_prompt(_entity(), [{"content": "Chazel: I listen at the door."}])
         assert "I listen at the door" in p
+
+
+class TestAutoPlayRotation:
+    """"the dm is supposed to auto play with the characters until someone
+    takes the wheel" — one companion reacts per player turn, in rotation."""
+
+    def test_the_rotation_takes_turns(self):
+        for n in ("Tillagon", "Zorya", "Jorlaan"):
+            _entity(n)
+        companion.reset_rotation()
+        picks = [companion.next_up()["name"] for _ in range(6)]
+        # stable order, cycling, everyone gets a turn before anyone repeats
+        assert picks[:3] == sorted({"Tillagon", "Zorya", "Jorlaan"})
+        assert picks[3:] == picks[:3]
+
+    def test_the_actor_is_never_asked_to_follow_itself(self):
+        _entity("Tillagon")
+        _entity("Zorya")
+        companion.reset_rotation()
+        for _ in range(4):
+            assert companion.next_up(exclude_name="Zorya")["name"] == "Tillagon"
+
+    def test_a_claimed_entity_drops_out_of_the_rotation(self):
+        a = _entity("Tillagon")
+        _entity("Zorya")
+        me = character.create_player("Chazel")
+        character.claim_character(a["id"], me["id"])
+        companion.reset_rotation()
+        assert {companion.next_up()["name"] for _ in range(3)} == {"Zorya"}
+
+    def test_no_companions_means_nobody_follows(self):
+        companion.reset_rotation()
+        assert companion.next_up() is None
+
+    def test_only_one_follows_a_turn(self):
+        """Seven reacting to every action would be minutes of narration
+        between each human turn."""
+        for n in ("Tillagon", "Zorya", "Jorlaan"):
+            _entity(n)
+        companion.reset_rotation()
+        assert companion.next_up() is not None
+        # next_up returns one, never a list
+        assert isinstance(companion.next_up(), dict)
